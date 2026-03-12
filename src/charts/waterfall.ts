@@ -92,7 +92,7 @@ export function generateWaterfallChart(input: ChartInput): string {
   const axisMin = dataMin < 0 ? -niceNumber(Math.abs(dataMin), 0) : 0;
   const axisRange = axisMax - axisMin;
 
-  const yPx = (v: number): number => padTop + chartH * (1 - (v - axisMin) / axisRange);
+  const yPx = (v: number): number => Math.round((padTop + chartH * (1 - (v - axisMin) / axisRange)) * 100) / 100;
   const zeroY = yPx(0);
 
   const n = bars.length;
@@ -152,8 +152,8 @@ export function generateWaterfallChart(input: ChartInput): string {
       svg += `<text x="${x + barW / 2}" y="${labelY}" text-anchor="middle" fill="${theme.text}" font-size="11" font-weight="500">${displayVal}</text>`;
     }
 
-    // Connector line to next bar (dashed, at the top of current bar end value)
-    if (i < bars.length - 1 && !bars[i + 1].isTotal) {
+    // Connector line to next bar (dashed, at the running total level)
+    if (i < bars.length - 1) {
       const connectorY = yPx(b.runningTotal);
       const nextX = padLeft + (i + 1) * groupW + barPad / 2;
       svg += `<line x1="${x + barW}" y1="${connectorY}" x2="${nextX}" y2="${connectorY}" stroke="${theme.border}" stroke-width="1" stroke-dasharray="3,2"/>`;
