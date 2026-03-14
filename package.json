@@ -1,6 +1,7 @@
 {
   "name": "@charta/mcp",
-  "version": "1.0.1",
+  "version": "1.0.2",
+  "mcpName": "io.github.mortenator/charta",
   "description": "MCP server for generating beautiful, presentation-ready charts (SVG + PNG)",
   "main": "dist/index.js",
   "bin": {
@@ -35,7 +36,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/charta-ai/charta-mcp"
+    "url": "https://github.com/mortenator/charta-mcp"
   },
   "homepage": "https://getcharta.ai"
 }
