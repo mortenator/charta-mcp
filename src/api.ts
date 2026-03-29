@@ -14,7 +14,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { generateChart } from "./charts/index.js";
-import { ChartInput, ChartType, chartCache } from "./types.js";
+import { ChartInput, ChartType, CHART_TYPES, chartCache } from "./types.js";
 import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
 import { z } from "zod";
 // Requires "resolveJsonModule": true in tsconfig.json (already set)
@@ -96,12 +96,7 @@ const pngLimiter = rateLimit({
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
-const SUPPORTED_CHART_TYPES = [
-  "waterfall", "bar", "grouped-bar", "stacked-bar",
-  "line", "area", "pie", "donut", "scatter", "bubble",
-  "gantt", "mekko", "radar", "heatmap",
-] as const;
-
+// Derive from CHART_TYPES in types.ts — avoids drift if new types are added
 const ChartStyleSchema = z.object({
   theme: z.enum(["dark", "light"]).optional(),
   accentColor: z.string().optional(),
@@ -114,8 +109,8 @@ const ChartStyleSchema = z.object({
 }).optional();
 
 const ChartRequestSchema = z.object({
-  type: z.enum(SUPPORTED_CHART_TYPES, {
-    errorMap: () => ({ message: `type must be one of: ${SUPPORTED_CHART_TYPES.join(", ")}` }),
+  type: z.enum(CHART_TYPES, {
+    errorMap: () => ({ message: `type must be one of: ${CHART_TYPES.join(", ")}` }),
   }),
   data: z.array(z.record(z.unknown())).min(1, "data must have at least one item"),
   title: z.string().optional(),

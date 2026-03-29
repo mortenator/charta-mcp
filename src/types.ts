@@ -1,18 +1,11 @@
-export type ChartType =
-  | "waterfall"
-  | "bar"
-  | "grouped-bar"
-  | "stacked-bar"
-  | "line"
-  | "area"
-  | "pie"
-  | "donut"
-  | "scatter"
-  | "bubble"
-  | "gantt"
-  | "mekko"
-  | "radar"
-  | "heatmap";
+/** Canonical list of all supported chart types. */
+export const CHART_TYPES = [
+  "waterfall", "bar", "grouped-bar", "stacked-bar",
+  "line", "area", "pie", "donut", "scatter", "bubble",
+  "gantt", "mekko", "radar", "heatmap",
+] as const;
+
+export type ChartType = typeof CHART_TYPES[number];
 
 export interface DataPoint {
   label: string;
