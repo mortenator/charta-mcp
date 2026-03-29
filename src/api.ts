@@ -82,9 +82,19 @@ const chartGenLimiter = rateLimit({
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the base URL for resource links.
+ * Uses BASE_URL env var when set (preferred for production).
+ * Without BASE_URL, uses req.protocol + Host header — this relies on
+ * `trust proxy` being correctly configured; set BASE_URL to eliminate
+ * host-header injection risk entirely.
+ */
 function resolveBaseUrl(req: Request): string {
   if (BASE_URL) return BASE_URL.replace(/\/$/, "");
-  return `${req.protocol}://${req.get("host") as string}`;
+  // Sanitize the host header: allow only hostname:port characters
+  const rawHost = (req.get("host") as string | undefined) ?? "localhost";
+  const safeHost = rawHost.replace(/[^a-zA-Z0-9.\-:[\]]/g, "").slice(0, 253);
+  return `${req.protocol}://${safeHost}`;
 }
 
 /** Sanitize a user-supplied id for safe inclusion in error messages. */
