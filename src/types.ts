@@ -149,11 +149,24 @@ export function getTheme(style?: ChartStyle): ThemeColors {
  * Shared in-memory chart cache (chartId → SVG string).
  * Both the MCP server (src/index.ts) and the REST API (src/api.ts) import this.
  * When running as separate processes they each have their own instance.
- * If imported together in the same process they share this cache — the REST API
- * applies TTL eviction and a max-entries cap; MCP-generated entries are exempt
- * from that eviction logic and will persist until the process exits.
+ * The cache enforces a max-entries cap via enforceCapacity() called at insertion
+ * time in generateChart(). The REST API additionally applies TTL eviction via
+ * scheduleEviction().
  */
 export const chartCache = new Map<string, string>();
+
+/** Max cache entries. Eviction removes the oldest entry (Map insertion order). */
+export const CACHE_MAX_ENTRIES = 500;
+
+/** Evict oldest entry if cache exceeds capacity. Called before each insertion. */
+export function enforceCapacity(): void {
+  if (chartCache.size >= CACHE_MAX_ENTRIES) {
+    const firstKey = chartCache.keys().next().value;
+    if (firstKey !== undefined) {
+      chartCache.delete(firstKey);
+    }
+  }
+}
 
 import { randomBytes } from "crypto";
 

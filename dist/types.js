@@ -1,8 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.chartCache = void 0;
+exports.CACHE_MAX_ENTRIES = exports.chartCache = exports.CHART_TYPES = void 0;
 exports.getTheme = getTheme;
+exports.enforceCapacity = enforceCapacity;
 exports.generateChartId = generateChartId;
+/** Canonical list of all supported chart types. */
+exports.CHART_TYPES = [
+    "waterfall", "bar", "grouped-bar", "stacked-bar",
+    "line", "area", "pie", "donut", "scatter", "bubble",
+    "gantt", "mekko", "radar", "heatmap",
+];
 function getTheme(style) {
     const isDark = !style?.theme || style.theme === "dark";
     const accent = style?.accentColor ?? "#7C5CFC";
@@ -51,8 +58,29 @@ function getTheme(style) {
     }
 }
 // Stored chart cache (in-memory for session)
+/**
+ * Shared in-memory chart cache (chartId → SVG string).
+ * Both the MCP server (src/index.ts) and the REST API (src/api.ts) import this.
+ * When running as separate processes they each have their own instance.
+ * The cache enforces a max-entries cap via enforceCapacity() called at insertion
+ * time in generateChart(). The REST API additionally applies TTL eviction via
+ * scheduleEviction().
+ */
 exports.chartCache = new Map();
+/** Max cache entries. Eviction removes the oldest entry (Map insertion order). */
+exports.CACHE_MAX_ENTRIES = 500;
+/** Evict oldest entry if cache exceeds capacity. Called before each insertion. */
+function enforceCapacity() {
+    if (exports.chartCache.size >= exports.CACHE_MAX_ENTRIES) {
+        const firstKey = exports.chartCache.keys().next().value;
+        if (firstKey !== undefined) {
+            exports.chartCache.delete(firstKey);
+        }
+    }
+}
+const crypto_1 = require("crypto");
 function generateChartId() {
-    return `chart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // Use crypto.randomBytes for better entropy than Math.random
+    return `chart_${Date.now()}_${(0, crypto_1.randomBytes)(6).toString("hex")}`;
 }
 //# sourceMappingURL=types.js.map

@@ -7,7 +7,7 @@
  * Env vars:
  *   PORT=3000       HTTP port to listen on
  *   BASE_URL        Public base URL for svgUrl/pngUrl (e.g. https://api.getcharta.ai)
- *   CORS_ORIGIN     Allowed CORS origins (comma-separated, or * for all). Default: *
+ *   CORS_ORIGIN     Allowed CORS origins (comma-separated, or * for all). Default: disabled (same-origin)
  */
 
 import express, { Request, Response, NextFunction } from "express";
@@ -27,29 +27,23 @@ const VERSION: string = pkg.version;
 const PORT = process.env.PORT ?? 3000;
 const BASE_URL = process.env.BASE_URL; // optional explicit base URL
 
-// CORS origins: comma-separated list or * for all
-const CORS_ORIGIN_ENV = process.env.CORS_ORIGIN ?? "*";
+// CORS origins: comma-separated list, "*" for all, or unset for same-origin only.
+// Wildcard must be an explicit opt-in — the default is restrictive (no cross-origin).
+const CORS_ORIGIN_ENV = process.env.CORS_ORIGIN;
 const corsOrigin: string | string[] | boolean =
-  CORS_ORIGIN_ENV === "*" ? "*" : CORS_ORIGIN_ENV.split(",").map((s) => s.trim());
+  CORS_ORIGIN_ENV === undefined
+    ? false
+    : CORS_ORIGIN_ENV === "*"
+      ? "*"
+      : CORS_ORIGIN_ENV.split(",").map((s) => s.trim());
 
-// Simple in-memory cache TTL + size cap
+// REST-specific TTL eviction (cap enforcement is handled by generateChart → enforceCapacity)
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const CACHE_MAX_ENTRIES = 500;
 
 function scheduleEviction(chartId: string): void {
   setTimeout(() => {
     chartCache.delete(chartId);
   }, CACHE_TTL_MS).unref();
-}
-
-function enforceCapacity(): void {
-  if (chartCache.size > CACHE_MAX_ENTRIES) {
-    // Delete the oldest entry (Maps iterate insertion order)
-    const firstKey = chartCache.keys().next().value;
-    if (firstKey !== undefined) {
-      chartCache.delete(firstKey);
-    }
-  }
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -114,7 +108,10 @@ const ChartRequestSchema = z.object({
   type: z.enum(CHART_TYPES, {
     errorMap: () => ({ message: `type must be one of: ${CHART_TYPES.join(", ")}` }),
   }),
-  data: z.array(z.record(z.unknown())).min(1, "data must have at least one item"),
+  data: z.array(z.record(z.unknown()).refine(
+    (obj) => typeof obj["label"] === "string",
+    { message: "each data item must have a string \"label\" field" }
+  )).min(1, "data must have at least one item"),
   title: z.string().optional(),
   xLabel: z.string().optional(),
   yLabel: z.string().optional(),
@@ -126,14 +123,18 @@ const ChartRequestSchema = z.object({
 
 /**
  * Resolve the base URL for resource links.
- * Uses BASE_URL env var when set (preferred for production).
- * Without BASE_URL, uses req.protocol + Host header — this relies on
- * `trust proxy` being correctly configured; set BASE_URL to eliminate
- * host-header injection risk entirely.
+ * Uses BASE_URL env var when set (required for production).
+ * Without BASE_URL in production, falls back to localhost to prevent
+ * host-header injection. In non-production, uses the sanitized Host header
+ * for local development convenience.
  */
 function resolveBaseUrl(req: Request): string {
   if (BASE_URL) return BASE_URL.replace(/\/$/, "");
-  // Sanitize the host header: allow only hostname:port characters
+  // In production, refuse to trust Host header — use safe fallback
+  if (process.env.NODE_ENV === "production") {
+    return `http://localhost:${PORT}`;
+  }
+  // Dev only: sanitize the host header for local convenience
   const rawHost = (req.get("host") as string | undefined) ?? "localhost";
   const safeHost = rawHost.replace(/[^a-zA-Z0-9.\-:[\]]/g, "").slice(0, 253);
   return `${req.protocol}://${safeHost}`;
@@ -142,6 +143,19 @@ function resolveBaseUrl(req: Request): string {
 /** Sanitize a user-supplied id for safe inclusion in error messages. */
 function sanitizeId(id: string): string {
   return id.replace(/[^\w-]/g, "").slice(0, 64);
+}
+
+/**
+ * Strip dangerous elements from SVG content before serving.
+ * Removes <script>, event handlers (onload, onclick, etc.), and <foreignObject>
+ * to prevent stored XSS even if chart generators interpolate user strings unsafely.
+ */
+function sanitizeSvg(svg: string): string {
+  return svg
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<script[^>]*\/>/gi, "")
+    .replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "")
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -186,6 +200,15 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  */
 app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
   try {
+    // Reject non-object bodies explicitly before Zod for a clear error message
+    if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
+      res.status(400).json({
+        error: "Request body must be a JSON object",
+        code: "INVALID_BODY",
+      });
+      return;
+    }
+
     // Validate request body with zod schema before passing to chart engine
     const parsed = ChartRequestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -200,10 +223,8 @@ app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
     const input = parsed.data as unknown as ChartInput & { seriesLabels?: string[] };
     const result = generateChart(input);
 
-    // generateChart() has already stored the chart in chartCache.
-    // enforceCapacity() evicts the OLDEST entry (Map insertion order), not the new one.
-    // scheduleEviction() sets a TTL on the newly generated chart.
-    enforceCapacity();
+    // generateChart() enforces cache capacity before insertion.
+    // scheduleEviction() sets a REST-specific TTL on the newly generated chart.
     scheduleEviction(result.chartId);
 
     const base = resolveBaseUrl(req);
@@ -238,7 +259,7 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   // Suggest download to avoid browser rendering SVG directly (defence-in-depth)
   res.setHeader("Content-Disposition", `attachment; filename="${sanitizeId(chartId)}.svg"`);
-  res.end(svg);
+  res.end(sanitizeSvg(svg));
 });
 
 /**
@@ -254,7 +275,8 @@ app.get("/v1/charts/:chartId/png", pngLimiter, async (req: Request, res: Respons
 
   try {
     const sharp = (await import("sharp")).default;
-    const png = await sharp(Buffer.from(svg), { density: 144 }).png().toBuffer();
+    const safeSvg = sanitizeSvg(svg);
+    const png = await sharp(Buffer.from(safeSvg), { density: 144 }).png().toBuffer();
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.end(png);
@@ -288,9 +310,12 @@ const httpServer = app.listen(PORT, () => {
   console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
   if (!BASE_URL && process.env.NODE_ENV === "production") {
     console.warn(
-      "⚠️  BASE_URL is not set. svgUrl/pngUrl in responses are constructed from the " +
-      "Host request header. Set BASE_URL to eliminate host-header injection risk."
+      "⚠️  BASE_URL is not set. In production, svgUrl/pngUrl will use localhost as fallback. " +
+      "Set BASE_URL to the public hostname for correct resource URLs."
     );
+  }
+  if (!CORS_ORIGIN_ENV) {
+    console.log("CORS: disabled (same-origin only). Set CORS_ORIGIN to allow cross-origin requests.");
   }
   console.log("Endpoints:");
   console.log("  GET  /v1/health");

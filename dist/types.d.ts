@@ -1,4 +1,6 @@
-export type ChartType = "waterfall" | "bar" | "grouped-bar" | "stacked-bar" | "line" | "area" | "pie" | "donut" | "scatter" | "bubble" | "gantt" | "mekko" | "radar" | "heatmap";
+/** Canonical list of all supported chart types. */
+export declare const CHART_TYPES: readonly ["waterfall", "bar", "grouped-bar", "stacked-bar", "line", "area", "pie", "donut", "scatter", "bubble", "gantt", "mekko", "radar", "heatmap"];
+export type ChartType = typeof CHART_TYPES[number];
 export interface DataPoint {
     label: string;
     value?: number;
@@ -72,6 +74,18 @@ export interface ThemeColors {
     palette: string[];
 }
 export declare function getTheme(style?: ChartStyle): ThemeColors;
+/**
+ * Shared in-memory chart cache (chartId → SVG string).
+ * Both the MCP server (src/index.ts) and the REST API (src/api.ts) import this.
+ * When running as separate processes they each have their own instance.
+ * The cache enforces a max-entries cap via enforceCapacity() called at insertion
+ * time in generateChart(). The REST API additionally applies TTL eviction via
+ * scheduleEviction().
+ */
 export declare const chartCache: Map<string, string>;
+/** Max cache entries. Eviction removes the oldest entry (Map insertion order). */
+export declare const CACHE_MAX_ENTRIES = 500;
+/** Evict oldest entry if cache exceeds capacity. Called before each insertion. */
+export declare function enforceCapacity(): void;
 export declare function generateChartId(): string;
 //# sourceMappingURL=types.d.ts.map

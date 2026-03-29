@@ -59,6 +59,7 @@ function generateChart(input) {
         }
     }
     const chartId = (0, types_js_1.generateChartId)();
+    (0, types_js_1.enforceCapacity)();
     types_js_1.chartCache.set(chartId, svg);
     return { svg, chartId, type: input.type };
 }
@@ -72,12 +73,8 @@ function validateInput(input) {
     if (input.data.length === 0) {
         throw new Error("data array is empty — provide at least one data point");
     }
-    const SUPPORTED = [
-        "waterfall", "bar", "grouped-bar", "stacked-bar", "line", "area",
-        "pie", "donut", "scatter", "bubble", "gantt", "mekko", "radar", "heatmap",
-    ];
-    if (!SUPPORTED.includes(input.type)) {
-        throw new Error(`Unsupported chart type: "${input.type}". Supported types: ${SUPPORTED.join(", ")}`);
+    if (!types_js_1.CHART_TYPES.includes(input.type)) {
+        throw new Error(`Unsupported chart type: "${input.type}". Supported types: ${types_js_1.CHART_TYPES.join(", ")}`);
     }
     // Type-specific validation
     switch (input.type) {

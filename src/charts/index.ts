@@ -1,4 +1,4 @@
-import { ChartInput, ChartResult, ChartType, CHART_TYPES, generateChartId, chartCache } from "../types.js";
+import { ChartInput, ChartResult, ChartType, CHART_TYPES, generateChartId, chartCache, enforceCapacity } from "../types.js";
 import { generateBarChart, generateGroupedBarChart, generateStackedBarChart } from "./bar.js";
 import { generateWaterfallChart } from "./waterfall.js";
 import { generateLineChart } from "./line.js";
@@ -60,6 +60,7 @@ export function generateChart(input: ChartInput): ChartResult {
   }
 
   const chartId = generateChartId();
+  enforceCapacity();
   chartCache.set(chartId, svg);
 
   return { svg, chartId, type: input.type };
