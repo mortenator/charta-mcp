@@ -3,6 +3,11 @@
  * Charta REST API v1
  * Express HTTP server exposing chart generation over REST.
  * Run: node dist/api.js (or npm run api)
+ *
+ * Env vars:
+ *   PORT=3000       HTTP port to listen on
+ *   BASE_URL        Public base URL for svgUrl/pngUrl (e.g. https://api.getcharta.ai)
+ *   CORS_ORIGIN     Allowed CORS origins (comma-separated, or * for all). Default: *
  */
 
 import express, { Request, Response, NextFunction } from "express";
@@ -10,21 +15,69 @@ import cors from "cors";
 import { generateChart } from "./charts/index.js";
 import { ChartInput, ChartType, chartCache } from "./types.js";
 import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
+import pkg from "../package.json";
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const VERSION: string = pkg.version ?? "1.0.0";
+
+const PORT = process.env.PORT ?? 3000;
+const BASE_URL = process.env.BASE_URL; // optional explicit base URL
+
+// CORS origins: comma-separated list or * for all
+const CORS_ORIGIN_ENV = process.env.CORS_ORIGIN ?? "*";
+const corsOrigin: string | string[] | boolean =
+  CORS_ORIGIN_ENV === "*" ? "*" : CORS_ORIGIN_ENV.split(",").map((s) => s.trim());
+
+// Simple in-memory cache TTL + size cap
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_MAX_ENTRIES = 500;
+
+function scheduleEviction(chartId: string): void {
+  setTimeout(() => {
+    chartCache.delete(chartId);
+  }, CACHE_TTL_MS).unref();
+}
+
+function enforceCapacity(): void {
+  if (chartCache.size > CACHE_MAX_ENTRIES) {
+    // Delete the oldest entry (Maps iterate insertion order)
+    const firstKey = chartCache.keys().next().value;
+    if (firstKey !== undefined) {
+      chartCache.delete(firstKey);
+    }
+  }
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const VERSION = "1.0.0";
+
+// Trust reverse proxy so req.protocol reflects X-Forwarded-Proto
+app.set("trust proxy", 1);
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
-app.use(cors());
+app.use(
+  cors({
+    origin: corsOrigin,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json({ limit: "2mb" }));
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function resolveBaseUrl(req: Request): string {
+  if (BASE_URL) return BASE_URL.replace(/\/$/, "");
+  return `${req.protocol}://${req.get("host") as string}`;
+}
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 /**
  * GET /v1/health
- * Simple healthcheck.
  */
 app.get("/v1/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", version: VERSION });
@@ -32,7 +85,6 @@ app.get("/v1/health", (_req: Request, res: Response) => {
 
 /**
  * GET /v1/chart-types
- * List all supported chart types with descriptions and examples.
  */
 app.get("/v1/chart-types", (_req: Request, res: Response) => {
   res.json({ chartTypes: CHART_TYPE_INFO });
@@ -40,7 +92,6 @@ app.get("/v1/chart-types", (_req: Request, res: Response) => {
 
 /**
  * GET /v1/chart-types/:type/schema
- * Get JSON schema for a specific chart type.
  */
 app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
   const type = req.params["type"] as string;
@@ -58,10 +109,7 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
 
 /**
  * POST /v1/charts
- * Generate a chart and return SVG + PNG URL.
- *
- * Body: { type, data, title?, xLabel?, yLabel?, seriesLabels?, style? }
- * Response: { chartId, type, svg, pngUrl }
+ * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
 app.post("/v1/charts", (req: Request, res: Response) => {
   try {
@@ -73,15 +121,19 @@ app.post("/v1/charts", (req: Request, res: Response) => {
     }
 
     const result = generateChart(input);
-    const host = req.get("host") ?? `localhost:${PORT}`;
-    const proto = req.protocol ?? "http";
+
+    // Apply TTL and capacity cap after caching
+    scheduleEviction(result.chartId);
+    enforceCapacity();
+
+    const base = resolveBaseUrl(req);
 
     res.status(201).json({
       chartId: result.chartId,
       type: result.type,
       svg: result.svg,
-      svgUrl: `${proto}://${host}/v1/charts/${result.chartId}/svg`,
-      pngUrl: `${proto}://${host}/v1/charts/${result.chartId}/png`,
+      svgUrl: `${base}/v1/charts/${result.chartId}/svg`,
+      pngUrl: `${base}/v1/charts/${result.chartId}/png`,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -91,7 +143,6 @@ app.post("/v1/charts", (req: Request, res: Response) => {
 
 /**
  * GET /v1/charts/:chartId/svg
- * Return cached SVG for a chart.
  */
 app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
   const chartId = req.params["chartId"] as string;
@@ -107,7 +158,6 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
 
 /**
  * GET /v1/charts/:chartId/png
- * Return cached chart as PNG binary (requires sharp).
  */
 app.get("/v1/charts/:chartId/png", async (req: Request, res: Response) => {
   const chartId = req.params["chartId"] as string;
@@ -118,7 +168,6 @@ app.get("/v1/charts/:chartId/png", async (req: Request, res: Response) => {
   }
 
   try {
-    // Dynamically import sharp so the server still starts if sharp is unavailable
     const sharp = (await import("sharp")).default;
     const png = await sharp(Buffer.from(svg), { density: 144 }).png().toBuffer();
     res.setHeader("Content-Type", "image/png");
@@ -141,6 +190,7 @@ app.use((_req: Request, res: Response) => {
 
 // ─── Error handler ────────────────────────────────────────────────────────────
 
+// Express requires 4-argument signature to identify error handlers
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error("Unhandled error:", err);
