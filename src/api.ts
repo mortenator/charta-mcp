@@ -12,6 +12,7 @@
 
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { generateChart } from "./charts/index.js";
 import { ChartInput, ChartType, chartCache } from "./types.js";
 import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
@@ -53,8 +54,11 @@ function enforceCapacity(): void {
 
 const app = express();
 
-// Trust reverse proxy so req.protocol reflects X-Forwarded-Proto
-app.set("trust proxy", 1);
+// Trust reverse proxy so req.protocol reflects X-Forwarded-Proto.
+// Set TRUST_PROXY=false to disable if running without a trusted proxy in front.
+if (process.env.TRUST_PROXY !== "false") {
+  app.set("trust proxy", 1);
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
@@ -67,11 +71,25 @@ app.use(
 );
 app.use(express.json({ limit: "2mb" }));
 
+// Rate limiting: 60 chart-generation requests per minute per IP
+const chartGenLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
+});
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function resolveBaseUrl(req: Request): string {
   if (BASE_URL) return BASE_URL.replace(/\/$/, "");
   return `${req.protocol}://${req.get("host") as string}`;
+}
+
+/** Sanitize a user-supplied id for safe inclusion in error messages. */
+function sanitizeId(id: string): string {
+  return id.replace(/[^\w-]/g, "").slice(0, 64);
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -111,7 +129,7 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
-app.post("/v1/charts", (req: Request, res: Response) => {
+app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
   try {
     const input = req.body as ChartInput & { seriesLabels?: string[] };
 
@@ -148,7 +166,7 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
   const chartId = req.params["chartId"] as string;
   const svg = chartCache.get(chartId);
   if (!svg) {
-    res.status(404).json({ error: `Chart not found: ${chartId}`, code: "CHART_NOT_FOUND" });
+    res.status(404).json({ error: `Chart not found: ${sanitizeId(chartId)}`, code: "CHART_NOT_FOUND" });
     return;
   }
   res.setHeader("Content-Type", "image/svg+xml");
@@ -163,7 +181,7 @@ app.get("/v1/charts/:chartId/png", async (req: Request, res: Response) => {
   const chartId = req.params["chartId"] as string;
   const svg = chartCache.get(chartId);
   if (!svg) {
-    res.status(404).json({ error: `Chart not found: ${chartId}`, code: "CHART_NOT_FOUND" });
+    res.status(404).json({ error: `Chart not found: ${sanitizeId(chartId)}`, code: "CHART_NOT_FOUND" });
     return;
   }
 
@@ -173,10 +191,10 @@ app.get("/v1/charts/:chartId/png", async (req: Request, res: Response) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.end(png);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch (_err: unknown) {
+    // Don't expose internal sharp/native error details to the client
     res.status(503).json({
-      error: `PNG conversion failed: ${message}`,
+      error: "PNG conversion failed. The chart may be invalid or the PNG renderer is unavailable.",
       code: "PNG_CONVERSION_FAILED",
     });
   }
