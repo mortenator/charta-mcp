@@ -124,13 +124,13 @@ async function testGenerateChart(): Promise<string> {
   assert(typeof data.svgUrl === "string", "svgUrl present");
   assert(typeof data.pngUrl === "string", "pngUrl present");
 
-  // Invalid type
+  // Invalid type (caught by zod schema validation before chart engine)
   const { status: s2, data: d2 } = await json("POST", "/v1/charts", {
     type: "invalid-type",
     data: [{ label: "A", value: 1 }],
   });
   assert(s2 === 400, "invalid type returns 400");
-  assert(d2.code === "CHART_GENERATION_FAILED", "code is CHART_GENERATION_FAILED");
+  assert(d2.code === "INVALID_BODY", "invalid type returns INVALID_BODY");
 
   // Empty data
   const { status: s3 } = await json("POST", "/v1/charts", {

@@ -16,6 +16,7 @@ import rateLimit from "express-rate-limit";
 import { generateChart } from "./charts/index.js";
 import { ChartInput, ChartType, chartCache } from "./types.js";
 import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
+import { z } from "zod";
 // Requires "resolveJsonModule": true in tsconfig.json (already set)
 import pkg from "../package.json";
 
@@ -93,6 +94,37 @@ const pngLimiter = rateLimit({
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
 });
 
+// ─── Validation ──────────────────────────────────────────────────────────────
+
+const SUPPORTED_CHART_TYPES = [
+  "waterfall", "bar", "grouped-bar", "stacked-bar",
+  "line", "area", "pie", "donut", "scatter", "bubble",
+  "gantt", "mekko", "radar", "heatmap",
+] as const;
+
+const ChartStyleSchema = z.object({
+  theme: z.enum(["dark", "light"]).optional(),
+  accentColor: z.string().optional(),
+  fontFamily: z.string().optional(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  showGrid: z.boolean().optional(),
+  showLegend: z.boolean().optional(),
+  showValues: z.boolean().optional(),
+}).optional();
+
+const ChartRequestSchema = z.object({
+  type: z.enum(SUPPORTED_CHART_TYPES, {
+    errorMap: () => ({ message: `type must be one of: ${SUPPORTED_CHART_TYPES.join(", ")}` }),
+  }),
+  data: z.array(z.record(z.unknown())).min(1, "data must have at least one item"),
+  title: z.string().optional(),
+  xLabel: z.string().optional(),
+  yLabel: z.string().optional(),
+  seriesLabels: z.array(z.string()).optional(),
+  style: ChartStyleSchema,
+});
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -157,16 +189,18 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  */
 app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
   try {
-    // seriesLabels is an optional top-level field supported by multi-series chart types
-    // (grouped-bar, stacked-bar, mekko). It's passed through to generateChart which
-    // forwards it to the chart renderers for legend labels.
-    const input = req.body as ChartInput & { seriesLabels?: string[] };
-
-    if (!input || typeof input !== "object" || Array.isArray(input)) {
-      res.status(400).json({ error: "Request body must be a JSON object", code: "INVALID_BODY" });
+    // Validate request body with zod schema before passing to chart engine
+    const parsed = ChartRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const messages = parsed.error.errors.map((e) => `${e.path.join(".") || "body"}: ${e.message}`);
+      res.status(400).json({
+        error: messages.join("; "),
+        code: "INVALID_BODY",
+      });
       return;
     }
 
+    const input = parsed.data as unknown as ChartInput & { seriesLabels?: string[] };
     const result = generateChart(input);
 
     // Enforce capacity cap first, then schedule TTL eviction
@@ -203,6 +237,8 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
   // Prevent script execution if SVG is rendered directly in a browser
   res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  // Suggest download to avoid browser rendering SVG directly (defence-in-depth)
+  res.setHeader("Content-Disposition", `attachment; filename="${sanitizeId(chartId)}.svg"`);
   res.end(svg);
 });
 
@@ -249,7 +285,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
   if (!BASE_URL && process.env.NODE_ENV === "production") {
     console.warn(
@@ -264,6 +300,15 @@ app.listen(PORT, () => {
   console.log("  POST /v1/charts");
   console.log("  GET  /v1/charts/:chartId/svg");
   console.log("  GET  /v1/charts/:chartId/png");
+});
+
+// Graceful shutdown on SIGTERM (container / process manager signals)
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received — shutting down gracefully");
+  httpServer.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
 });
 
 export default app;
