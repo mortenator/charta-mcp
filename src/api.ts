@@ -16,11 +16,12 @@ import rateLimit from "express-rate-limit";
 import { generateChart } from "./charts/index.js";
 import { ChartInput, ChartType, chartCache } from "./types.js";
 import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
+// Requires "resolveJsonModule": true in tsconfig.json (already set)
 import pkg from "../package.json";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const VERSION: string = pkg.version ?? "1.0.0";
+const VERSION: string = pkg.version;
 
 const PORT = process.env.PORT ?? 3000;
 const BASE_URL = process.env.BASE_URL; // optional explicit base URL
@@ -82,10 +83,11 @@ const chartGenLimiter = rateLimit({
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
 });
 
-// Rate limiting for PNG endpoint: expensive due to sharp image conversion
+// Rate limiting for PNG endpoint: stricter than chart gen because PNG conversion
+// via sharp is more CPU-intensive than SVG string generation
 const pngLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
@@ -155,6 +157,9 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  */
 app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
   try {
+    // seriesLabels is an optional top-level field supported by multi-series chart types
+    // (grouped-bar, stacked-bar, mekko). It's passed through to generateChart which
+    // forwards it to the chart renderers for legend labels.
     const input = req.body as ChartInput & { seriesLabels?: string[] };
 
     if (!input || typeof input !== "object" || Array.isArray(input)) {
