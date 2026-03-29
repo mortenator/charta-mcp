@@ -97,6 +97,7 @@ const pngLimiter = rateLimit({
 // ─── Validation ──────────────────────────────────────────────────────────────
 
 // Derive from CHART_TYPES in types.ts — avoids drift if new types are added
+// ChartStyleSchema mirrors ChartStyle in types.ts — update both together
 const ChartStyleSchema = z.object({
   theme: z.enum(["dark", "light"]).optional(),
   accentColor: z.string().optional(),
@@ -107,6 +108,7 @@ const ChartStyleSchema = z.object({
   showLegend: z.boolean().optional(),
   showValues: z.boolean().optional(),
 }).optional();
+// Note: if ChartStyle in types.ts gains new fields, add them here too.
 
 const ChartRequestSchema = z.object({
   type: z.enum(CHART_TYPES, {
@@ -198,7 +200,9 @@ app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
     const input = parsed.data as unknown as ChartInput & { seriesLabels?: string[] };
     const result = generateChart(input);
 
-    // Enforce capacity cap first, then schedule TTL eviction
+    // generateChart() has already stored the chart in chartCache.
+    // enforceCapacity() evicts the OLDEST entry (Map insertion order), not the new one.
+    // scheduleEviction() sets a TTL on the newly generated chart.
     enforceCapacity();
     scheduleEviction(result.chartId);
 
