@@ -152,6 +152,14 @@ export function getTheme(style?: ChartStyle): ThemeColors {
 }
 
 // Stored chart cache (in-memory for session)
+/**
+ * Shared in-memory chart cache (chartId → SVG string).
+ * Both the MCP server (src/index.ts) and the REST API (src/api.ts) import this.
+ * When running as separate processes they each have their own instance.
+ * If imported together in the same process they share this cache — the REST API
+ * applies TTL eviction and a max-entries cap; MCP-generated entries are exempt
+ * from that eviction logic and will persist until the process exits.
+ */
 export const chartCache = new Map<string, string>();
 
 export function generateChartId(): string {

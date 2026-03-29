@@ -231,6 +231,12 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(PORT, () => {
   console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
+  if (!BASE_URL && process.env.NODE_ENV === "production") {
+    console.warn(
+      "⚠️  BASE_URL is not set. svgUrl/pngUrl in responses are constructed from the " +
+      "Host request header. Set BASE_URL to eliminate host-header injection risk."
+    );
+  }
   console.log("Endpoints:");
   console.log("  GET  /v1/health");
   console.log("  GET  /v1/chart-types");
