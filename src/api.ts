@@ -55,8 +55,10 @@ function enforceCapacity(): void {
 const app = express();
 
 // Trust reverse proxy so req.protocol reflects X-Forwarded-Proto.
-// Set TRUST_PROXY=false to disable if running without a trusted proxy in front.
-if (process.env.TRUST_PROXY !== "false") {
+// Enable with TRUST_PROXY=1 (or "true") for deployments behind nginx/ALB/Cloudflare.
+// Disabled by default to be safe for bare deployments.
+// In production, prefer setting BASE_URL to avoid relying on req.protocol entirely.
+if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
   app.set("trust proxy", 1);
 }
 
@@ -143,16 +145,16 @@ app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
   try {
     const input = req.body as ChartInput & { seriesLabels?: string[] };
 
-    if (!input || typeof input !== "object") {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
       res.status(400).json({ error: "Request body must be a JSON object", code: "INVALID_BODY" });
       return;
     }
 
     const result = generateChart(input);
 
-    // Apply TTL and capacity cap after caching
-    scheduleEviction(result.chartId);
+    // Enforce capacity cap first, then schedule TTL eviction
     enforceCapacity();
+    scheduleEviction(result.chartId);
 
     const base = resolveBaseUrl(req);
 
