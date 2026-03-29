@@ -82,6 +82,15 @@ const chartGenLimiter = rateLimit({
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
 });
 
+// Rate limiting for PNG endpoint: expensive due to sharp image conversion
+const pngLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
+});
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -125,7 +134,10 @@ app.get("/v1/chart-types", (_req: Request, res: Response) => {
  */
 app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
   const type = req.params["type"] as string;
-  const schema = CHART_SCHEMAS[type as ChartType];
+  // Use hasOwnProperty to prevent prototype-chain lookups (e.g. "constructor", "__proto__")
+  const schema = Object.prototype.hasOwnProperty.call(CHART_SCHEMAS, type)
+    ? CHART_SCHEMAS[type as ChartType]
+    : undefined;
   if (!schema) {
     res.status(404).json({
       error: `Unknown chart type: "${type}"`,
@@ -183,13 +195,16 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
   }
   res.setHeader("Content-Type", "image/svg+xml");
   res.setHeader("Cache-Control", "public, max-age=3600");
+  // Prevent script execution if SVG is rendered directly in a browser
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.end(svg);
 });
 
 /**
  * GET /v1/charts/:chartId/png
  */
-app.get("/v1/charts/:chartId/png", async (req: Request, res: Response) => {
+app.get("/v1/charts/:chartId/png", pngLimiter, async (req: Request, res: Response) => {
   const chartId = req.params["chartId"] as string;
   const svg = chartCache.get(chartId);
   if (!svg) {

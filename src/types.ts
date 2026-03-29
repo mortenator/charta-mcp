@@ -163,5 +163,8 @@ export function getTheme(style?: ChartStyle): ThemeColors {
 export const chartCache = new Map<string, string>();
 
 export function generateChartId(): string {
-  return `chart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  // Use crypto.randomBytes for better entropy than Math.random
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { randomBytes } = require("crypto") as typeof import("crypto");
+  return `chart_${Date.now()}_${randomBytes(6).toString("hex")}`;
 }
