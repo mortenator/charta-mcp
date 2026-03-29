@@ -13,6 +13,7 @@
     "start": "node dist/index.js",
     "api": "node dist/api.js",
     "dev:api": "ts-node src/api.ts",
+    "test:api": "npm run build && node dist/api.test.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
