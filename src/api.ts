@@ -92,10 +92,8 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
  */
 async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    res.status(503).json({
-      error: "Authentication service not configured",
-      code: "AUTH_UNAVAILABLE",
-    });
+    // Auth not configured — allow passthrough (e.g. local dev)
+    next();
     return;
   }
 
@@ -160,9 +158,15 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
       return;
     }
 
+    (req as any).authContext = {
+      creditsRemaining: result.credits_remaining,
+      plan: result.plan,
+      email: result.email,
+    };
+
     next();
   } catch (err: unknown) {
-    console.error("API key auth error:", err);
+    console.error("API key auth error:", err instanceof Error ? err.message : "unknown error");
     res.status(502).json({
       error: "Authentication service unavailable",
       code: "AUTH_SERVICE_ERROR",
@@ -263,6 +267,33 @@ function sanitizeSvg(svg: string): string {
     .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
 }
 
+// ─── Chart Request Validation Middleware ─────────────────────────────────────
+
+/**
+ * Validates the chart request body before auth runs, so credits are not
+ * consumed for malformed requests.
+ */
+function validateChartRequest(req: Request, res: Response, next: NextFunction): void {
+  if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
+    res.status(400).json({
+      error: "Request body must be a JSON object",
+      code: "INVALID_BODY",
+    });
+    return;
+  }
+  const parsed = ChartRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const messages = parsed.error.errors.map((e) => `${e.path.join(".") || "body"}: ${e.message}`);
+    res.status(400).json({
+      error: messages.join("; "),
+      code: "INVALID_BODY",
+    });
+    return;
+  }
+  (req as any).validatedChart = parsed.data;
+  next();
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 /**
@@ -303,29 +334,9 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
-app.post("/v1/charts", chartGenLimiter, apiKeyAuth, async (req: Request, res: Response, next: NextFunction) => {
+app.post("/v1/charts", chartGenLimiter, validateChartRequest, apiKeyAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Reject non-object bodies explicitly before Zod for a clear error message
-    if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
-      res.status(400).json({
-        error: "Request body must be a JSON object",
-        code: "INVALID_BODY",
-      });
-      return;
-    }
-
-    // Validate request body with zod schema before passing to chart engine
-    const parsed = ChartRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const messages = parsed.error.errors.map((e) => `${e.path.join(".") || "body"}: ${e.message}`);
-      res.status(400).json({
-        error: messages.join("; "),
-        code: "INVALID_BODY",
-      });
-      return;
-    }
-
-    const input = parsed.data as unknown as ChartInput & { seriesLabels?: string[] };
+    const input = (req as any).validatedChart as ChartInput & { seriesLabels?: string[] };
     const result = generateChart(input);
 
     // generateChart() enforces cache capacity before insertion.
