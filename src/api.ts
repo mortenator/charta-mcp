@@ -104,13 +104,20 @@ const ChartStyleSchema = z.object({
 }).optional();
 // Note: if ChartStyle in types.ts gains new fields, add them here too.
 
+// Compile-time check: if ChartStyle gains a field not in ChartStyleSchema,
+// this line will produce a type error, forcing the schema to be updated.
+// This prevents accidental stripping of new style properties.
+import { ChartStyle } from "./types.js";
+type _AssertSchemaCoversStyle = z.infer<NonNullable<typeof ChartStyleSchema>> extends ChartStyle ? true : never;
+const _: _AssertSchemaCoversStyle = true;
+
 const ChartRequestSchema = z.object({
   type: z.enum(CHART_TYPES, {
     errorMap: () => ({ message: `type must be one of: ${CHART_TYPES.join(", ")}` }),
   }),
   data: z.array(z.record(z.unknown()).refine(
-    (obj) => typeof obj["label"] === "string",
-    { message: "each data item must have a string \"label\" field" }
+    (obj): obj is { label: string } => typeof obj["label"] === "string" && obj["label"].length <= 200,
+    { message: 'each data item must have a string "label" field (max 200 chars)' }
   )).min(1, "data must have at least one item").max(500, "data must have at most 500 items"),
   title: z.string().max(500).optional(),
   xLabel: z.string().max(200).optional(),
@@ -204,7 +211,7 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
-app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
+app.post("/v1/charts", chartGenLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     // Reject non-object bodies explicitly before Zod for a clear error message
     if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
@@ -238,13 +245,12 @@ app.post("/v1/charts", chartGenLimiter, (req: Request, res: Response) => {
     res.status(201).json({
       chartId: result.chartId,
       type: result.type,
-      svg: result.svg,
+      svg: sanitizeSvg(result.svg),
       svgUrl: `${base}/v1/charts/${result.chartId}/svg`,
       pngUrl: `${base}/v1/charts/${result.chartId}/png`,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: message, code: "CHART_GENERATION_FAILED" });
+    next(err);
   }
 });
 
@@ -261,8 +267,9 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
   res.setHeader("Content-Type", "image/svg+xml");
   res.setHeader("Cache-Control", "public, max-age=3600");
   // Prevent script execution if SVG is rendered directly in a browser
-  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Download-Options", "noopen");
   // Suggest download to avoid browser rendering SVG directly (defence-in-depth)
   res.setHeader("Content-Disposition", `attachment; filename="${sanitizeId(chartId)}.svg"`);
   res.end(sanitizeSvg(svg));
@@ -271,27 +278,24 @@ app.get("/v1/charts/:chartId/svg", (req: Request, res: Response) => {
 /**
  * GET /v1/charts/:chartId/png
  */
-app.get("/v1/charts/:chartId/png", pngLimiter, async (req: Request, res: Response) => {
-  const chartId = req.params["chartId"] as string;
-  const svg = chartCache.get(chartId);
-  if (!svg) {
-    res.status(404).json({ error: `Chart not found: ${sanitizeId(chartId)}`, code: "CHART_NOT_FOUND" });
-    return;
-  }
-
+app.get("/v1/charts/:chartId/png", pngLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const chartId = req.params["chartId"] as string;
+    const svg = chartCache.get(chartId);
+    if (!svg) {
+      res.status(404).json({ error: `Chart not found: ${sanitizeId(chartId)}`, code: "CHART_NOT_FOUND" });
+      return;
+    }
+
     const sharp = (await import("sharp")).default;
     const safeSvg = sanitizeSvg(svg);
     const png = await sharp(Buffer.from(safeSvg), { density: 144 }).png().toBuffer();
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.end(png);
-  } catch (_err: unknown) {
-    // Don't expose internal sharp/native error details to the client
-    res.status(503).json({
-      error: "PNG conversion failed. The chart may be invalid or the PNG renderer is unavailable.",
-      code: "PNG_CONVERSION_FAILED",
-    });
+  } catch (err: unknown) {
+    // Forward to the main error handler
+    next(err);
   }
 });
 
@@ -307,7 +311,12 @@ app.use((_req: Request, res: Response) => {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+  // Differentiate between user errors (e.g., bad input from generateChart) and true server errors
+  if (err.message.includes("Invalid")) { // Heuristic for validation errors
+    res.status(400).json({ error: err.message, code: "CHART_GENERATION_FAILED" });
+  } else {
+    res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+  }
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────

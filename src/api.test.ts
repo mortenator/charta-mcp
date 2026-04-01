@@ -72,8 +72,16 @@ async function startServer(): Promise<void> {
   // The server now runs for the duration of the test process and exits via process.exit().
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require("./api");
-  // Wait for the server to bind
-  await new Promise<void>((resolve) => setTimeout(resolve, 300));
+  // Wait for the server to be ready by polling the health endpoint
+  for (let i = 0; i < 20; i++) {
+    try {
+      await request("GET", "/v1/health");
+      return; // Server is up
+    } catch {
+      await new Promise<void>((r) => setTimeout(r, 100));
+    }
+  }
+  throw new Error("Server failed to start within 2 seconds");
 }
 
 // ─── Test suites ─────────────────────────────────────────────────────────────
