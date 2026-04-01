@@ -8,6 +8,8 @@
  *   PORT=3000       HTTP port to listen on
  *   BASE_URL        Public base URL for svgUrl/pngUrl (e.g. https://api.getcharta.ai)
  *   CORS_ORIGIN     Allowed CORS origins (comma-separated, or * for all). Default: disabled (same-origin)
+ *   SUPABASE_URL              Supabase project URL (required for API key auth)
+ *   SUPABASE_SERVICE_ROLE_KEY Supabase service-role key (required for API key auth)
  */
 
 import express, { Request, Response, NextFunction } from "express";
@@ -77,6 +79,96 @@ const chartGenLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
 });
+
+// ─── API Key Authentication ──────────────────────────────────────────────────
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+/**
+ * Middleware that validates an API key via Supabase and decrements one credit.
+ * Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to be set.
+ * Returns 401 for missing/invalid keys, 429 when daily limit is reached.
+ */
+async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    res.status(503).json({
+      error: "Authentication service not configured",
+      code: "AUTH_UNAVAILABLE",
+    });
+    return;
+  }
+
+  const authHeader = req.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res.status(401).json({
+      error: "Missing or malformed Authorization header. Expected: Bearer <api_key>",
+      code: "AUTH_REQUIRED",
+    });
+    return;
+  }
+
+  const apiKey = authHeader.slice(7);
+  if (apiKey.length === 0) {
+    res.status(401).json({
+      error: "API key must not be empty",
+      code: "AUTH_REQUIRED",
+    });
+    return;
+  }
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/decrement_credits_by_api_key`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({ p_api_key: apiKey }),
+    });
+
+    if (!response.ok) {
+      console.error(`Supabase RPC error: ${response.status} ${response.statusText}`);
+      res.status(502).json({
+        error: "Authentication service error",
+        code: "AUTH_SERVICE_ERROR",
+      });
+      return;
+    }
+
+    const result = await response.json() as {
+      success: boolean;
+      credits_remaining?: number;
+      plan?: string;
+      email?: string;
+      error?: string;
+    };
+
+    if (!result.success) {
+      if (result.error === "Daily limit reached") {
+        res.status(429).json({
+          error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
+          code: "CREDITS_EXHAUSTED",
+        });
+      } else {
+        res.status(401).json({
+          error: "Invalid API key",
+          code: "INVALID_API_KEY",
+        });
+      }
+      return;
+    }
+
+    next();
+  } catch (err: unknown) {
+    console.error("API key auth error:", err);
+    res.status(502).json({
+      error: "Authentication service unavailable",
+      code: "AUTH_SERVICE_ERROR",
+    });
+  }
+}
 
 // Rate limiting for PNG endpoint: stricter than chart gen because PNG conversion
 // via sharp is more CPU-intensive than SVG string generation
@@ -211,7 +303,7 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
-app.post("/v1/charts", chartGenLimiter, async (req: Request, res: Response, next: NextFunction) => {
+app.post("/v1/charts", chartGenLimiter, apiKeyAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     // Reject non-object bodies explicitly before Zod for a clear error message
     if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
