@@ -1,4 +1,4 @@
-import { ChartInput, ChartResult, ChartType, generateChartId, chartCache } from "../types.js";
+import { ChartInput, ChartResult, ChartType, CHART_TYPES, generateChartId, chartCache, enforceCapacity } from "../types.js";
 import { generateBarChart, generateGroupedBarChart, generateStackedBarChart } from "./bar.js";
 import { generateWaterfallChart } from "./waterfall.js";
 import { generateLineChart } from "./line.js";
@@ -60,6 +60,7 @@ export function generateChart(input: ChartInput): ChartResult {
   }
 
   const chartId = generateChartId();
+  enforceCapacity();
   chartCache.set(chartId, svg);
 
   return { svg, chartId, type: input.type };
@@ -78,14 +79,9 @@ function validateInput(input: ChartInput): void {
     throw new Error("data array is empty — provide at least one data point");
   }
 
-  const SUPPORTED: ChartType[] = [
-    "waterfall", "bar", "grouped-bar", "stacked-bar", "line", "area",
-    "pie", "donut", "scatter", "bubble", "gantt", "mekko", "radar", "heatmap",
-  ];
-
-  if (!SUPPORTED.includes(input.type)) {
+  if (!(CHART_TYPES as readonly string[]).includes(input.type)) {
     throw new Error(
-      `Unsupported chart type: "${input.type}". Supported types: ${SUPPORTED.join(", ")}`
+      `Unsupported chart type: "${input.type}". Supported types: ${CHART_TYPES.join(", ")}`
     );
   }
 
