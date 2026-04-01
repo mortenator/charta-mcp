@@ -67,8 +67,9 @@ const TEST_PORT = 3099;
 process.env.PORT = String(TEST_PORT);
 
 async function startServer(): Promise<void> {
-  // Side-effect import: api.ts auto-starts the Express server on require.
-  // The server runs for the duration of the test process and exits via process.exit().
+  // Set env var to trigger app.listen() in the required module
+  process.env.START_SERVER = "1";
+  // The server now runs for the duration of the test process and exits via process.exit().
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require("./api");
   // Wait for the server to bind

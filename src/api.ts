@@ -111,11 +111,11 @@ const ChartRequestSchema = z.object({
   data: z.array(z.record(z.unknown()).refine(
     (obj) => typeof obj["label"] === "string",
     { message: "each data item must have a string \"label\" field" }
-  )).min(1, "data must have at least one item"),
-  title: z.string().optional(),
-  xLabel: z.string().optional(),
-  yLabel: z.string().optional(),
-  seriesLabels: z.array(z.string()).optional(),
+  )).min(1, "data must have at least one item").max(500, "data must have at most 500 items"),
+  title: z.string().max(500).optional(),
+  xLabel: z.string().max(200).optional(),
+  yLabel: z.string().max(200).optional(),
+  seriesLabels: z.array(z.string().max(200)).max(50).optional(),
   style: ChartStyleSchema,
 });
 
@@ -149,6 +149,12 @@ function sanitizeId(id: string): string {
  * Strip dangerous elements from SVG content before serving.
  * Removes <script>, event handlers (onload, onclick, etc.), and <foreignObject>
  * to prevent stored XSS even if chart generators interpolate user strings unsafely.
+ *
+ * NOTE: Regex-based sanitization is best-effort defense-in-depth.
+ * Primary protection comes from CSP headers and Content-Disposition: attachment.
+ * For higher assurance, consider a proper XML parser (e.g. DOMPurify in a browser
+ * context, or a server-side XML sanitizer). Encoding tricks or multi-line attribute
+ * splits could theoretically bypass regex matching.
  */
 function sanitizeSvg(svg: string): string {
   return svg
@@ -306,33 +312,38 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-const httpServer = app.listen(PORT, () => {
-  console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
-  if (!BASE_URL && process.env.NODE_ENV === "production") {
-    console.warn(
-      "⚠️  BASE_URL is not set. In production, svgUrl/pngUrl will use localhost as fallback. " +
-      "Set BASE_URL to the public hostname for correct resource URLs."
-    );
-  }
-  if (!CORS_ORIGIN_ENV) {
-    console.log("CORS: disabled (same-origin only). Set CORS_ORIGIN to allow cross-origin requests.");
-  }
-  console.log("Endpoints:");
-  console.log("  GET  /v1/health");
-  console.log("  GET  /v1/chart-types");
-  console.log("  GET  /v1/chart-types/:type/schema");
-  console.log("  POST /v1/charts");
-  console.log("  GET  /v1/charts/:chartId/svg");
-  console.log("  GET  /v1/charts/:chartId/png");
-});
-
-// Graceful shutdown on SIGTERM (container / process manager signals)
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received — shutting down gracefully");
-  httpServer.close(() => {
-    console.log("Server closed");
-    process.exit(0);
+// Auto-start only when executed directly (node dist/api.js) or when START_SERVER=1.
+// When imported as a module (e.g. for testing individual routes), the server does
+// NOT auto-start — call app.listen() manually or set START_SERVER=1 before require.
+if (require.main === module || process.env.START_SERVER === "1") {
+  const httpServer = app.listen(PORT, () => {
+    console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
+    if (!BASE_URL && process.env.NODE_ENV === "production") {
+      console.warn(
+        "⚠️  BASE_URL is not set. In production, svgUrl/pngUrl will use localhost as fallback. " +
+        "Set BASE_URL to the public hostname for correct resource URLs."
+      );
+    }
+    if (!CORS_ORIGIN_ENV) {
+      console.log("CORS: disabled (same-origin only). Set CORS_ORIGIN to allow cross-origin requests.");
+    }
+    console.log("Endpoints:");
+    console.log("  GET  /v1/health");
+    console.log("  GET  /v1/chart-types");
+    console.log("  GET  /v1/chart-types/:type/schema");
+    console.log("  POST /v1/charts");
+    console.log("  GET  /v1/charts/:chartId/svg");
+    console.log("  GET  /v1/charts/:chartId/png");
   });
-});
+
+  // Graceful shutdown on SIGTERM (container / process manager signals)
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received — shutting down gracefully");
+    httpServer.close(() => {
+      console.log("Server closed");
+      process.exit(0);
+    });
+  });
+}
 
 export default app;
