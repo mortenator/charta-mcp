@@ -2,6 +2,9 @@
 -- checks plan, and decrements in a single transaction.
 -- Replaces the old get + decrement split that had a TOCTOU race.
 
+-- Drop the split functions introduced earlier in this feature branch.
+-- No external callers exist — these were only used by validateKeyAndFetchCredits
+-- and consumeCredit, both of which are also removed in this commit.
 DROP FUNCTION IF EXISTS get_credits_by_api_key(TEXT);
 DROP FUNCTION IF EXISTS decrement_credits_by_api_key(TEXT);
 
@@ -31,10 +34,12 @@ BEGIN
   VALUES (v_user_id)
   ON CONFLICT (user_id) DO NOTHING;
 
-  -- 3. Read plan to check for unlimited
+  -- 3. Read plan and lock the row for the subsequent UPDATE.
+  --    FOR UPDATE prevents concurrent requests from reading stale tier/credits.
   SELECT subscription_tier INTO v_plan
   FROM user_credits
-  WHERE user_id = v_user_id;
+  WHERE user_id = v_user_id
+  FOR UPDATE;
 
   IF v_plan = 'business' THEN
     RETURN json_build_object('success', true, 'credits_remaining', 'unlimited', 'plan', v_plan);

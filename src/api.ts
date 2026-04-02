@@ -368,8 +368,11 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  */
 app.post("/v1/charts", chartGenLimiter, validateChartRequest, reserveCredit, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Guaranteed set by validateChartRequest middleware
-    const input = req.validatedChart!;
+    if (!req.validatedChart) {
+      res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+      return;
+    }
+    const input = req.validatedChart;
     const result = generateChart(input);
 
     scheduleEviction(result.chartId);
