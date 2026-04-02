@@ -41,9 +41,14 @@ BEGIN
   END IF;
 
   -- 4. Determine limit for this plan
+  -- NOTE: limits are hardcoded here for simplicity. If plan tiers change
+  -- frequently, consider moving to a plan_limits table. Unknown/NULL tiers
+  -- default to the free limit (5) as a safe fallback.
   v_credits_limit := CASE WHEN v_plan = 'plus' THEN 20 ELSE 5 END;
 
-  -- 5. Atomic check-and-decrement in a single UPDATE (solves TOCTOU)
+  -- 5. Atomic check-and-decrement in a single UPDATE (solves TOCTOU).
+  --    The WHERE clause ensures we only increment if below the limit.
+  --    If no rows match (already at limit), RETURNING yields NULL → limit reached.
   UPDATE user_credits
   SET daily_credits_used = daily_credits_used + 1
   WHERE user_id = v_user_id

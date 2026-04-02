@@ -148,7 +148,6 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
       },
       body: JSON.stringify({ p_api_key: apiKey }),
     });
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       console.error(`Supabase RPC error: ${response.status} ${response.statusText}`);
@@ -164,6 +163,7 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
     };
 
     if (!result.success) {
+      // RPC error string must match the SQL function's json_build_object output
       if (result.error === DAILY_LIMIT_ERROR) {
         res.status(429).json({
           error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
@@ -185,7 +185,6 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
 
     next();
   } catch (err: unknown) {
-    clearTimeout(timeoutId);
     if (err instanceof Error && err.name === "AbortError") {
       console.error("Credit reservation timed out after 5s");
       res.status(503).json({ error: "Authentication service timed out", code: "AUTH_TIMEOUT" });
@@ -193,6 +192,8 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
       console.error("Credit reservation error:", err instanceof Error ? err.message : "unknown error");
       res.status(502).json({ error: "Authentication service unavailable", code: "AUTH_SERVICE_ERROR" });
     }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -356,9 +357,16 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
 /**
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
+ *
+ * Middleware order: validate → reserveCredit → generate.
+ * Credit is reserved (decremented) before generation — this is intentional.
+ * A reservation model prevents abuse where callers could repeatedly trigger
+ * expensive generation and only "pay" on success. Invalid requests are
+ * rejected at validation before any credit is consumed.
  */
 app.post("/v1/charts", chartGenLimiter, validateChartRequest, reserveCredit, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Guaranteed set by validateChartRequest middleware
     const input = req.validatedChart!;
     const result = generateChart(input);
 
