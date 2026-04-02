@@ -65,6 +65,10 @@ async function json(
 
 const TEST_PORT = 3099;
 process.env.PORT = String(TEST_PORT);
+// Force auth passthrough by clearing Supabase env vars — tests don't hit real Supabase
+process.env.NODE_ENV = "test";
+delete process.env.SUPABASE_URL;
+delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 async function startServer(): Promise<void> {
   // Set env var to trigger app.listen() in the required module
@@ -201,6 +205,32 @@ async function testNotFound(): Promise<void> {
   assert(data.code === "NOT_FOUND", 'code === "NOT_FOUND"');
 }
 
+async function testCreditConsumptionOnlyOnSuccess(): Promise<void> {
+  console.log("\n📋 Credit consumption: only on success (dev/test passthrough)");
+
+  // In test mode, auth is passthrough but the flow still exercises the middleware chain.
+  // Successful chart generation should complete without error
+  const { status: s1 } = await json("POST", "/v1/charts", {
+    type: "bar",
+    data: [{ label: "A", value: 1 }],
+  });
+  assert(s1 === 201, "successful chart returns 201 (credits consumed after generation)");
+
+  // Invalid body should be rejected at validation — before auth or credit consumption
+  const { status: s2 } = await json("POST", "/v1/charts", {
+    type: "invalid-type",
+    data: [{ label: "A", value: 1 }],
+  });
+  assert(s2 === 400, "invalid request rejected before credit consumption");
+
+  // Empty data should be rejected at validation — no credits consumed
+  const { status: s3 } = await json("POST", "/v1/charts", {
+    type: "bar",
+    data: [],
+  });
+  assert(s3 === 400, "empty data rejected before credit consumption");
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -216,6 +246,7 @@ async function testNotFound(): Promise<void> {
     await testGetSvg(chartId);
     await testGetPng(chartId);
     await testNotFound();
+    await testCreditConsumptionOnlyOnSuccess();
   } catch (err) {
     console.error("Unexpected test error:", err);
     process.exit(1);

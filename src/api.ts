@@ -97,11 +97,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 /**
- * Middleware that validates an API key via Supabase and decrements one credit.
+ * Middleware that validates an API key via Supabase and fetches the current credit count.
+ * Does NOT decrement credits — use consumeCredit after successful work.
  * Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to be set.
- * Returns 401 for missing/invalid keys, 429 when daily limit is reached.
+ * Returns 401 for missing/invalid keys, 429 when credits are exhausted.
  */
-async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+async function validateKeyAndFetchCredits(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     // Only allow passthrough in explicit dev/test environments.
     // staging, preview, or unset NODE_ENV all return 500 to avoid silently open endpoints.
@@ -138,7 +139,7 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
   const timeoutId = setTimeout(() => controller.abort(), 5_000);
 
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/decrement_credits_by_api_key`, {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_credits_by_api_key`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -163,12 +164,11 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
       success: boolean;
       credits_remaining?: number;
       plan?: string;
-      email?: string;
       error?: string;
     };
 
     if (!result.success) {
-      // The RPC returns this exact string for daily limit exhaustion.
+      // The RPC returns this exact string for zero-credit accounts.
       // Use a named constant so any future rename produces a compile-time search hit.
       const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
       if (result.error === DAILY_LIMIT_ERROR) {
@@ -208,6 +208,52 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
       });
     }
   }
+}
+
+/**
+ * Middleware that decrements one credit after a successful chart generation.
+ * Must run after validateKeyAndFetchCredits and after the chart is generated.
+ * Logs errors but does not fail the request — the chart was already produced.
+ */
+async function consumeCredit(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    // Dev/test passthrough — no credits to consume
+    next();
+    return;
+  }
+
+  const authHeader = req.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    next();
+    return;
+  }
+  const apiKey = authHeader.slice(7);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5_000);
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/decrement_credits_by_api_key`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({ p_api_key: apiKey }),
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.error(`Credit decrement RPC error: ${response.status} ${response.statusText}`);
+    }
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    console.error("Credit decrement error:", err instanceof Error ? err.message : "unknown error");
+  }
+
+  next();
 }
 
 // Rate limiting for PNG endpoint: stricter than chart gen because PNG conversion
@@ -370,7 +416,7 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
-app.post("/v1/charts", chartGenLimiter, validateChartRequest, apiKeyAuth, async (req: Request, res: Response, next: NextFunction) => {
+app.post("/v1/charts", chartGenLimiter, validateChartRequest, validateKeyAndFetchCredits, async (req: Request, res: Response, next: NextFunction) => {
   try {
     // validatedChart is guaranteed set by validateChartRequest middleware which runs before this handler
     const input = req.validatedChart!;
@@ -381,6 +427,11 @@ app.post("/v1/charts", chartGenLimiter, validateChartRequest, apiKeyAuth, async 
     scheduleEviction(result.chartId);
 
     const base = resolveBaseUrl(req);
+
+    // Decrement credit only after successful chart generation
+    await new Promise<void>((resolve) => {
+      consumeCredit(req, res, () => resolve());
+    });
 
     res.status(201).json({
       chartId: result.chartId,
@@ -466,7 +517,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // NOT auto-start — call app.listen() manually or set START_SERVER=1 before require.
 if (require.main === module || process.env.START_SERVER === "1") {
   // Startup guard: fail fast before accepting any requests if auth env vars are missing.
-  // This ensures the passthrough branch in apiKeyAuth is truly unreachable in production.
+  // This ensures the passthrough branch in validateKeyAndFetchCredits is truly unreachable in production.
   if (process.env.NODE_ENV === "production" && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
     console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production");
     process.exit(1);
