@@ -106,13 +106,14 @@ const FETCH_TIMEOUT_MS = 5_000;
  */
 async function reserveCredit(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    // Only allow passthrough in explicit dev/test environments.
-    if (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") {
-      console.warn("API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
+    // Only allow passthrough in test environment (NODE_ENV=test).
+    // Development environments must configure Supabase credentials.
+    if (process.env.NODE_ENV === "test") {
+      console.warn("API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set (test mode)");
       next();
       return;
     }
-    res.status(500).json({ error: "Server misconfiguration", code: "SERVER_ERROR" });
+    res.status(503).json({ error: "Authentication service not configured", code: "AUTH_SERVICE_UNAVAILABLE" });
     return;
   }
 
@@ -368,6 +369,7 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  */
 app.post("/v1/charts", chartGenLimiter, validateChartRequest, reserveCredit, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Safety net: unreachable when middleware chain is correct (validateChartRequest sets this)
     if (!req.validatedChart) {
       res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
       return;

@@ -1,6 +1,10 @@
 -- Atomic credit reservation: validates key, upserts user_credits row,
 -- checks plan, and decrements in a single transaction.
 -- Replaces the old get + decrement split that had a TOCTOU race.
+--
+-- DEPENDENCY: daily_credits_used is reset to 0 by an external cron job
+-- (Supabase pg_cron or equivalent). If the reset job fails, users are
+-- blocked until it runs. See: supabase/functions/reset-daily-credits.
 
 -- Drop the split functions introduced earlier in this feature branch.
 -- No external callers exist — these were only used by validateKeyAndFetchCredits
