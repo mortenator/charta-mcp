@@ -91,27 +91,27 @@ const chartGenLimiter = rateLimit({
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
 });
 
-// ─── API Key Authentication ──────────────────────────────────────────────────
+// ─── API Key Authentication + Credit Reservation ────────────────────────────
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
+const FETCH_TIMEOUT_MS = 5_000;
+
 /**
- * Middleware that validates an API key via Supabase and fetches the current credit count.
- * Does NOT decrement credits — use consumeCredit after successful work.
- * Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to be set.
+ * Middleware that validates an API key and atomically reserves one credit
+ * via a single Supabase RPC (reserve_credit_by_api_key).
  * Returns 401 for missing/invalid keys, 429 when credits are exhausted.
  */
-async function validateKeyAndFetchCredits(req: Request, res: Response, next: NextFunction): Promise<void> {
+async function reserveCredit(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     // Only allow passthrough in explicit dev/test environments.
-    // staging, preview, or unset NODE_ENV all return 500 to avoid silently open endpoints.
     if (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") {
-      console.warn("⚠️  API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
+      console.warn("API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
       next();
       return;
     }
-    console.error("API key auth misconfigured — SUPABASE env vars not set");
     res.status(500).json({ error: "Server misconfiguration", code: "SERVER_ERROR" });
     return;
   }
@@ -134,14 +134,11 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
     return;
   }
 
-  // 5-second timeout on Supabase call — prevents connection pool exhaustion under load
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5_000);
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    // Note: this RPC only validates the key and fetches credits, it does NOT decrement.
-    // Credit consumption happens in consumeCredit() only after successful chart generation.
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_credits_by_api_key`, {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/reserve_credit_by_api_key`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -155,29 +152,24 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
 
     if (!response.ok) {
       console.error(`Supabase RPC error: ${response.status} ${response.statusText}`);
-      res.status(502).json({
-        error: "Authentication service error",
-        code: "AUTH_SERVICE_ERROR",
-      });
+      res.status(502).json({ error: "Authentication service error", code: "AUTH_SERVICE_ERROR" });
       return;
     }
 
     const result = await response.json() as {
       success: boolean;
-      credits_remaining?: number;
+      credits_remaining?: number | string;
       plan?: string;
       error?: string;
     };
 
     if (!result.success) {
-      const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
       if (result.error === DAILY_LIMIT_ERROR) {
         res.status(429).json({
           error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
           code: "CREDITS_EXHAUSTED",
         });
       } else {
-        // Covers both explicit error strings and malformed/missing error field
         res.status(401).json({
           error: "Invalid API key or insufficient permissions",
           code: "INVALID_API_KEY",
@@ -187,70 +179,20 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
     }
 
     req.authContext = {
-      creditsRemaining: result.credits_remaining,
+      creditsRemaining: typeof result.credits_remaining === "number" ? result.credits_remaining : undefined,
       plan: result.plan,
-      // Note: email intentionally excluded — avoid leaking PII into logs via authContext
     };
 
     next();
   } catch (err: unknown) {
     clearTimeout(timeoutId);
     if (err instanceof Error && err.name === "AbortError") {
-      console.error("API key auth timed out after 5s");
-      res.status(503).json({
-        error: "Authentication service timed out",
-        code: "AUTH_TIMEOUT",
-      });
+      console.error("Credit reservation timed out after 5s");
+      res.status(503).json({ error: "Authentication service timed out", code: "AUTH_TIMEOUT" });
     } else {
-      console.error("API key auth error:", err instanceof Error ? err.message : "unknown error");
-      res.status(502).json({
-        error: "Authentication service unavailable",
-        code: "AUTH_SERVICE_ERROR",
-      });
+      console.error("Credit reservation error:", err instanceof Error ? err.message : "unknown error");
+      res.status(502).json({ error: "Authentication service unavailable", code: "AUTH_SERVICE_ERROR" });
     }
-  }
-}
-
-/**
- * Middleware that decrements one credit. Runs as a fire-and-forget async call
- * *after* a chart has been successfully generated.
- * Logs errors internally but does not affect the user response.
- */
-async function consumeCredit(req: Request): Promise<void> {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    // Dev/test passthrough — no credits to consume
-    return;
-  }
-
-  const authHeader = req.get("Authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    // Should be unreachable if called from a request that passed validateKeyAndFetchCredits
-    return;
-  }
-  const apiKey = authHeader.slice(7);
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5_000);
-  
-  try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/decrement_credits_by_api_key`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      },
-      body: JSON.stringify({ p_api_key: apiKey }),
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      console.error(`Credit decrement failed (Supabase RPC): ${response.status} ${response.statusText}`);
-    }
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    console.error("Credit decrement failed (network):", err instanceof Error ? err.message : "unknown error");
   }
 }
 
@@ -284,7 +226,8 @@ const ChartStyleSchema = z.object({
 // this line will produce a type error, forcing the schema to be updated.
 // This prevents accidental stripping of new style properties.
 import { ChartStyle } from "./types.js";
-type _AssertSchemaCoversStyle = z.infer<NonNullable<typeof ChartStyleSchema>> extends ChartStyle ? true : never;
+type _InferredStyle = NonNullable<z.infer<NonNullable<typeof ChartStyleSchema>>>;
+type _AssertSchemaCoversStyle = _InferredStyle extends ChartStyle ? true : never;
 const _: _AssertSchemaCoversStyle = true;
 
 const ChartRequestSchema = z.object({
@@ -414,22 +357,14 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
  */
-app.post("/v1/charts", chartGenLimiter, validateChartRequest, validateKeyAndFetchCredits, async (req: Request, res: Response, next: NextFunction) => {
+app.post("/v1/charts", chartGenLimiter, validateChartRequest, reserveCredit, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // validatedChart is guaranteed set by validateChartRequest middleware which runs before this handler
     const input = req.validatedChart!;
     const result = generateChart(input);
 
-    // generateChart() enforces cache capacity before insertion.
-    // scheduleEviction() sets a REST-specific TTL on the newly generated chart.
     scheduleEviction(result.chartId);
 
     const base = resolveBaseUrl(req);
-
-    // Consume a credit only after successful chart generation.
-    // Run this async but don't await — the response doesn't depend on it.
-    // Errors are logged by consumeCredit itself.
-    consumeCredit(req);
 
     res.status(201).json({
       chartId: result.chartId,
