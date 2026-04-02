@@ -139,6 +139,8 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
   const timeoutId = setTimeout(() => controller.abort(), 5_000);
 
   try {
+    // Note: this RPC only validates the key and fetches credits, it does NOT decrement.
+    // Credit consumption happens in consumeCredit() only after successful chart generation.
     const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_credits_by_api_key`, {
       method: "POST",
       signal: controller.signal,
@@ -168,17 +170,16 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
     };
 
     if (!result.success) {
-      // The RPC returns this exact string for zero-credit accounts.
-      // Use a named constant so any future rename produces a compile-time search hit.
       const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
       if (result.error === DAILY_LIMIT_ERROR) {
         res.status(429).json({
           error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
           code: "CREDITS_EXHAUSTED",
         });
-      } else {
+      } else if (result.error) {
+        // Any other structured error from the RPC (e.g. invalid key) is a 401
         res.status(401).json({
-          error: "Invalid API key",
+          error: "Invalid API key or insufficient permissions",
           code: "INVALID_API_KEY",
         });
       }
@@ -211,27 +212,26 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
 }
 
 /**
- * Middleware that decrements one credit after a successful chart generation.
- * Must run after validateKeyAndFetchCredits and after the chart is generated.
- * Logs errors but does not fail the request — the chart was already produced.
+ * Middleware that decrements one credit. Runs as a fire-and-forget async call
+ * *after* a chart has been successfully generated.
+ * Logs errors internally but does not affect the user response.
  */
-async function consumeCredit(req: Request, res: Response, next: NextFunction): Promise<void> {
+async function consumeCredit(req: Request): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     // Dev/test passthrough — no credits to consume
-    next();
     return;
   }
 
   const authHeader = req.get("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    next();
+    // Should be unreachable if called from a request that passed validateKeyAndFetchCredits
     return;
   }
   const apiKey = authHeader.slice(7);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5_000);
-
+  
   try {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/decrement_credits_by_api_key`, {
       method: "POST",
@@ -246,14 +246,12 @@ async function consumeCredit(req: Request, res: Response, next: NextFunction): P
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.error(`Credit decrement RPC error: ${response.status} ${response.statusText}`);
+      console.error(`Credit decrement failed (Supabase RPC): ${response.status} ${response.statusText}`);
     }
   } catch (err: unknown) {
     clearTimeout(timeoutId);
-    console.error("Credit decrement error:", err instanceof Error ? err.message : "unknown error");
+    console.error("Credit decrement failed (network):", err instanceof Error ? err.message : "unknown error");
   }
-
-  next();
 }
 
 // Rate limiting for PNG endpoint: stricter than chart gen because PNG conversion
@@ -428,10 +426,10 @@ app.post("/v1/charts", chartGenLimiter, validateChartRequest, validateKeyAndFetc
 
     const base = resolveBaseUrl(req);
 
-    // Decrement credit only after successful chart generation
-    await new Promise<void>((resolve) => {
-      consumeCredit(req, res, () => resolve());
-    });
+    // Consume a credit only after successful chart generation.
+    // Run this async but don't await — the response doesn't depend on it.
+    // Errors are logged by consumeCredit itself.
+    consumeCredit(req);
 
     res.status(201).json({
       chartId: result.chartId,
