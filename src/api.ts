@@ -450,7 +450,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // NOT auto-start — call app.listen() manually or set START_SERVER=1 before require.
 if (require.main === module || process.env.START_SERVER === "1") {
   // Startup guard: fail fast before accepting any requests if auth env vars are missing.
-  // This ensures the passthrough branch in validateKeyAndFetchCredits is truly unreachable in production.
+  // This ensures the passthrough branch in reserveCredit is truly unreachable in production.
   if (process.env.NODE_ENV === "production" && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
     console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production");
     process.exit(1);
