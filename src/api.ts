@@ -176,8 +176,8 @@ async function validateKeyAndFetchCredits(req: Request, res: Response, next: Nex
           error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
           code: "CREDITS_EXHAUSTED",
         });
-      } else if (result.error) {
-        // Any other structured error from the RPC (e.g. invalid key) is a 401
+      } else {
+        // Covers both explicit error strings and malformed/missing error field
         res.status(401).json({
           error: "Invalid API key or insufficient permissions",
           code: "INVALID_API_KEY",
