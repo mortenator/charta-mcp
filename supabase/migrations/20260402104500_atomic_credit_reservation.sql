@@ -33,17 +33,13 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'Invalid API key');
   END IF;
 
-  -- 2. Ensure user_credits row exists (solves missing-row bug)
+  -- 2. Upsert user_credits row and lock it in one step.
+  --    ON CONFLICT DO UPDATE with a no-op SET acquires a row-level lock,
+  --    preventing concurrent requests from racing between insert and read.
   INSERT INTO user_credits (user_id)
   VALUES (v_user_id)
-  ON CONFLICT (user_id) DO NOTHING;
-
-  -- 3. Read plan and lock the row for the subsequent UPDATE.
-  --    FOR UPDATE prevents concurrent requests from reading stale tier/credits.
-  SELECT subscription_tier INTO v_plan
-  FROM user_credits
-  WHERE user_id = v_user_id
-  FOR UPDATE;
+  ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+  RETURNING subscription_tier INTO v_plan;
 
   IF v_plan = 'business' THEN
     RETURN json_build_object('success', true, 'credits_remaining', 'unlimited', 'plan', v_plan);
@@ -65,6 +61,7 @@ BEGIN
   RETURNING daily_credits_used INTO v_credits_used;
 
   IF v_credits_used IS NULL THEN
+    -- CONTRACT: this error string is matched by DAILY_LIMIT_ERROR in api.ts to return 429.
     RETURN json_build_object('success', false, 'error', 'Daily limit reached');
   END IF;
 

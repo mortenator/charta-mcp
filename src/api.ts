@@ -96,6 +96,8 @@ const chartGenLimiter = rateLimit({
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// CONTRACT: this string must match the error value in reserve_credit_by_api_key SQL function.
+// If the SQL changes, update this constant. A mismatch degrades 429 → 401 silently.
 const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
 const FETCH_TIMEOUT_MS = 5_000;
 
@@ -118,7 +120,8 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
   }
 
   const authHeader = req.get("Authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  if (!authHeader || !authHeader.startsWith("Bearer ") || authHeader.length > 263) {
+    // 263 = "Bearer " (7 chars) + max key length (256 chars)
     res.status(401).json({
       error: "Missing or malformed Authorization header. Expected: Bearer <api_key>",
       code: "AUTH_REQUIRED",
@@ -127,7 +130,7 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
   }
 
   const apiKey = authHeader.slice(7);
-  if (apiKey.length === 0 || apiKey.length > 256) {
+  if (apiKey.length === 0) {
     res.status(401).json({
       error: "Invalid API key format",
       code: "AUTH_REQUIRED",
