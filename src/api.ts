@@ -8,6 +8,8 @@
  *   PORT=3000       HTTP port to listen on
  *   BASE_URL        Public base URL for svgUrl/pngUrl (e.g. https://api.getcharta.ai)
  *   CORS_ORIGIN     Allowed CORS origins (comma-separated, or * for all). Default: disabled (same-origin)
+ *   SUPABASE_URL              Supabase project URL (required for API key auth)
+ *   SUPABASE_SERVICE_ROLE_KEY Supabase service-role key (required for API key auth)
  */
 
 import express, { Request, Response, NextFunction } from "express";
@@ -19,6 +21,17 @@ import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
 import { z } from "zod";
 // Requires "resolveJsonModule": true in tsconfig.json (already set)
 import pkg from "../package.json";
+// ChartInput already imported above via ./types.js — augmentation uses the same type
+
+// ─── Express type augmentation — safe alternative to (req as any) casts
+declare global {
+  namespace Express {
+    interface Request {
+      authContext?: { creditsRemaining?: number; unlimited?: boolean; plan?: string };
+      validatedChart?: ChartInput & { seriesLabels?: string[] };
+    }
+  }
+}
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -78,6 +91,118 @@ const chartGenLimiter = rateLimit({
   message: { error: "Too many requests, please try again later.", code: "RATE_LIMITED" },
 });
 
+// ─── API Key Authentication + Credit Reservation ────────────────────────────
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// CONTRACT: this string must match the error value in reserve_credit_by_api_key SQL function.
+// If the SQL changes, update this constant. A mismatch degrades 429 → 401 silently.
+const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
+const FETCH_TIMEOUT_MS = 3_000;
+
+/**
+ * Middleware that validates an API key and atomically reserves one credit
+ * via a single Supabase RPC (reserve_credit_by_api_key).
+ * Returns 401 for missing/invalid keys, 429 when credits are exhausted.
+ */
+async function reserveCredit(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    // Only allow passthrough in test environment (NODE_ENV=test).
+    // Development environments must configure Supabase credentials.
+    if (process.env.NODE_ENV === "test") {
+      console.warn("API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set (test mode)");
+      next();
+      return;
+    }
+    res.status(503).json({ error: "Authentication service not configured", code: "AUTH_SERVICE_UNAVAILABLE" });
+    return;
+  }
+
+  const authHeader = req.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ") || authHeader.length > 263) {
+    // 263 = "Bearer " (7 chars) + max key length (256 chars)
+    res.status(401).json({
+      error: "Missing or malformed Authorization header. Expected: Bearer <api_key>",
+      code: "AUTH_REQUIRED",
+    });
+    return;
+  }
+
+  const apiKey = authHeader.slice(7);
+  if (apiKey.length === 0) {
+    res.status(401).json({
+      error: "Invalid API key format",
+      code: "AUTH_REQUIRED",
+    });
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/reserve_credit_by_api_key`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({ p_api_key: apiKey }),
+    });
+
+    if (!response.ok) {
+      console.error(`Supabase RPC error: ${response.status} ${response.statusText}`);
+      res.status(502).json({ error: "Authentication service error", code: "AUTH_SERVICE_ERROR" });
+      return;
+    }
+
+    const result = await response.json() as {
+      success: boolean;
+      credits_remaining?: number | string;
+      plan?: string;
+      error?: string;
+    };
+
+    if (!result.success) {
+      // RPC error string must match the SQL function's json_build_object output
+      if (result.error === DAILY_LIMIT_ERROR) {
+        res.status(429).json({
+          error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
+          code: "CREDITS_EXHAUSTED",
+        });
+      } else {
+        res.status(401).json({
+          error: "Invalid API key or insufficient permissions",
+          code: "INVALID_API_KEY",
+        });
+      }
+      return;
+    }
+
+    const isUnlimited = result.credits_remaining === "unlimited";
+    req.authContext = {
+      creditsRemaining: typeof result.credits_remaining === "number" ? result.credits_remaining : undefined,
+      unlimited: isUnlimited,
+      plan: result.plan,
+    };
+
+    next();
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === "AbortError") {
+      console.error(`Credit reservation timed out after ${FETCH_TIMEOUT_MS}ms`);
+      res.status(503).json({ error: "Authentication service timed out", code: "AUTH_TIMEOUT" });
+    } else {
+      console.error("Credit reservation error:", err instanceof Error ? err.message : "unknown error");
+      res.status(502).json({ error: "Authentication service unavailable", code: "AUTH_SERVICE_ERROR" });
+    }
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // Rate limiting for PNG endpoint: stricter than chart gen because PNG conversion
 // via sharp is more CPU-intensive than SVG string generation
 const pngLimiter = rateLimit({
@@ -108,7 +233,8 @@ const ChartStyleSchema = z.object({
 // this line will produce a type error, forcing the schema to be updated.
 // This prevents accidental stripping of new style properties.
 import { ChartStyle } from "./types.js";
-type _AssertSchemaCoversStyle = z.infer<NonNullable<typeof ChartStyleSchema>> extends ChartStyle ? true : never;
+type _InferredStyle = NonNullable<z.infer<NonNullable<typeof ChartStyleSchema>>>;
+type _AssertSchemaCoversStyle = _InferredStyle extends ChartStyle ? true : never;
 const _: _AssertSchemaCoversStyle = true;
 
 const ChartRequestSchema = z.object({
@@ -171,6 +297,33 @@ function sanitizeSvg(svg: string): string {
     .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
 }
 
+// ─── Chart Request Validation Middleware ─────────────────────────────────────
+
+/**
+ * Validates the chart request body before auth runs, so credits are not
+ * consumed for malformed requests.
+ */
+function validateChartRequest(req: Request, res: Response, next: NextFunction): void {
+  if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
+    res.status(400).json({
+      error: "Request body must be a JSON object",
+      code: "INVALID_BODY",
+    });
+    return;
+  }
+  const parsed = ChartRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const messages = parsed.error.errors.map((e) => `${e.path.join(".") || "body"}: ${e.message}`);
+    res.status(400).json({
+      error: messages.join("; "),
+      code: "INVALID_BODY",
+    });
+    return;
+  }
+  req.validatedChart = parsed.data;
+  next();
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 /**
@@ -210,34 +363,23 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
 /**
  * POST /v1/charts
  * Generate a chart → { chartId, type, svg, svgUrl, pngUrl }
+ *
+ * Middleware order: validate → reserveCredit → generate.
+ * Credit is reserved (decremented) before generation — this is intentional.
+ * A reservation model prevents abuse where callers could repeatedly trigger
+ * expensive generation and only "pay" on success. Invalid requests are
+ * rejected at validation before any credit is consumed.
  */
-app.post("/v1/charts", chartGenLimiter, async (req: Request, res: Response, next: NextFunction) => {
+app.post("/v1/charts", chartGenLimiter, validateChartRequest, reserveCredit, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Reject non-object bodies explicitly before Zod for a clear error message
-    if (Array.isArray(req.body) || typeof req.body !== "object" || req.body === null) {
-      res.status(400).json({
-        error: "Request body must be a JSON object",
-        code: "INVALID_BODY",
-      });
+    // Safety net: unreachable when middleware chain is correct (validateChartRequest sets this)
+    if (!req.validatedChart) {
+      res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
       return;
     }
-
-    // Validate request body with zod schema before passing to chart engine
-    const parsed = ChartRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const messages = parsed.error.errors.map((e) => `${e.path.join(".") || "body"}: ${e.message}`);
-      res.status(400).json({
-        error: messages.join("; "),
-        code: "INVALID_BODY",
-      });
-      return;
-    }
-
-    const input = parsed.data as unknown as ChartInput & { seriesLabels?: string[] };
+    const input = req.validatedChart;
     const result = generateChart(input);
 
-    // generateChart() enforces cache capacity before insertion.
-    // scheduleEviction() sets a REST-specific TTL on the newly generated chart.
     scheduleEviction(result.chartId);
 
     const base = resolveBaseUrl(req);
@@ -325,6 +467,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // When imported as a module (e.g. for testing individual routes), the server does
 // NOT auto-start — call app.listen() manually or set START_SERVER=1 before require.
 if (require.main === module || process.env.START_SERVER === "1") {
+  // Startup guard: fail fast before accepting any requests if auth env vars are missing.
+  // This ensures the passthrough branch in reserveCredit is truly unreachable in production.
+  if (process.env.NODE_ENV === "production" && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
+    console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production");
+    process.exit(1);
+  }
+
   const httpServer = app.listen(PORT, () => {
     console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
     if (!BASE_URL && process.env.NODE_ENV === "production") {

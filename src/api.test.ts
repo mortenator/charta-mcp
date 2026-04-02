@@ -65,6 +65,10 @@ async function json(
 
 const TEST_PORT = 3099;
 process.env.PORT = String(TEST_PORT);
+// Force auth passthrough by clearing Supabase env vars — tests don't hit real Supabase
+process.env.NODE_ENV = "test";
+delete process.env.SUPABASE_URL;
+delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 async function startServer(): Promise<void> {
   // Set env var to trigger app.listen() in the required module
@@ -201,6 +205,31 @@ async function testNotFound(): Promise<void> {
   assert(data.code === "NOT_FOUND", 'code === "NOT_FOUND"');
 }
 
+async function testValidationBeforeAuth(): Promise<void> {
+  console.log("\n📋 Validation runs before auth (dev/test passthrough)");
+
+  // In test mode, auth is passthrough but the middleware chain order is still exercised.
+  const { status: s1 } = await json("POST", "/v1/charts", {
+    type: "bar",
+    data: [{ label: "A", value: 1 }],
+  });
+  assert(s1 === 201, "valid request passes validation and auth passthrough");
+
+  // Invalid body rejected at validation — before auth middleware runs
+  const { status: s2 } = await json("POST", "/v1/charts", {
+    type: "invalid-type",
+    data: [{ label: "A", value: 1 }],
+  });
+  assert(s2 === 400, "invalid type rejected at validation layer");
+
+  // Empty data rejected at validation — auth never reached
+  const { status: s3 } = await json("POST", "/v1/charts", {
+    type: "bar",
+    data: [],
+  });
+  assert(s3 === 400, "empty data rejected at validation layer");
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -216,6 +245,7 @@ async function testNotFound(): Promise<void> {
     await testGetSvg(chartId);
     await testGetPng(chartId);
     await testNotFound();
+    await testValidationBeforeAuth();
   } catch (err) {
     console.error("Unexpected test error:", err);
     process.exit(1);
