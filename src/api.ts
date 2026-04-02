@@ -99,7 +99,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // CONTRACT: this string must match the error value in reserve_credit_by_api_key SQL function.
 // If the SQL changes, update this constant. A mismatch degrades 429 → 401 silently.
 const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
-const FETCH_TIMEOUT_MS = 5_000;
+const FETCH_TIMEOUT_MS = 3_000;
 
 /**
  * Middleware that validates an API key and atomically reserves one credit

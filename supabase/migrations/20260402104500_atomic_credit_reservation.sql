@@ -39,19 +39,22 @@ BEGIN
   INSERT INTO user_credits (user_id)
   VALUES (v_user_id)
   ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+  -- RETURNING here yields the post-upsert row. The no-op SET acquires a
+  -- row-level lock and returns the existing subscription_tier unchanged.
+  -- New users get the column default (typically 'free' or NULL → free fallback).
   RETURNING subscription_tier INTO v_plan;
 
   IF v_plan = 'business' THEN
     RETURN json_build_object('success', true, 'credits_remaining', 'unlimited', 'plan', v_plan);
   END IF;
 
-  -- 4. Determine limit for this plan
+  -- 3. Determine limit for this plan
   -- NOTE: limits are hardcoded here for simplicity. If plan tiers change
   -- frequently, consider moving to a plan_limits table. Unknown/NULL tiers
   -- default to the free limit (5) as a safe fallback.
   v_credits_limit := CASE WHEN v_plan = 'plus' THEN 20 ELSE 5 END;
 
-  -- 5. Atomic check-and-decrement in a single UPDATE (solves TOCTOU).
+  -- 4. Atomic check-and-decrement in a single UPDATE (solves TOCTOU).
   --    The WHERE clause ensures we only increment if below the limit.
   --    If no rows match (already at limit), RETURNING yields NULL → limit reached.
   UPDATE user_credits
