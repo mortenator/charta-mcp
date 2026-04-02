@@ -92,7 +92,13 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
  */
 async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    // Auth not configured — allow passthrough (e.g. local dev)
+    if (process.env.NODE_ENV === "production") {
+      // Fatal in production — missing env vars means the endpoint is completely open
+      console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production");
+      process.exit(1);
+    }
+    // Local dev: warn loudly and allow passthrough
+    console.warn("⚠️  API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
     next();
     return;
   }
@@ -115,9 +121,14 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
     return;
   }
 
+  // 5-second timeout on Supabase call — prevents connection pool exhaustion under load
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5_000);
+
   try {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/decrement_credits_by_api_key`, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -125,6 +136,7 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
       },
       body: JSON.stringify({ p_api_key: apiKey }),
     });
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       console.error(`Supabase RPC error: ${response.status} ${response.statusText}`);
@@ -144,6 +156,9 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
     };
 
     if (!result.success) {
+      // IMPORTANT: "Daily limit reached" must exactly match the string returned by
+      // the Supabase `decrement_credits_by_api_key` RPC function. If that string
+      // changes, this check will silently fall through to 401 instead of 429.
       if (result.error === "Daily limit reached") {
         res.status(429).json({
           error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
@@ -166,11 +181,20 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
 
     next();
   } catch (err: unknown) {
-    console.error("API key auth error:", err instanceof Error ? err.message : "unknown error");
-    res.status(502).json({
-      error: "Authentication service unavailable",
-      code: "AUTH_SERVICE_ERROR",
-    });
+    clearTimeout(timeoutId);
+    if (err instanceof Error && err.name === "AbortError") {
+      console.error("API key auth timed out after 5s");
+      res.status(503).json({
+        error: "Authentication service timed out",
+        code: "AUTH_TIMEOUT",
+      });
+    } else {
+      console.error("API key auth error:", err instanceof Error ? err.message : "unknown error");
+      res.status(502).json({
+        error: "Authentication service unavailable",
+        code: "AUTH_SERVICE_ERROR",
+      });
+    }
   }
 }
 
