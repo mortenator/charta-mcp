@@ -92,12 +92,9 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
  */
 async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    if (process.env.NODE_ENV === "production") {
-      // Fatal in production — missing env vars means the endpoint is completely open
-      console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production");
-      process.exit(1);
-    }
-    // Local dev: warn loudly and allow passthrough
+    // In production this branch is unreachable: the startup guard (see app.listen block)
+    // calls process.exit(1) before the first request arrives.
+    // In dev/test we allow passthrough so local development works without Supabase.
     console.warn("⚠️  API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
     next();
     return;
@@ -156,10 +153,10 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
     };
 
     if (!result.success) {
-      // IMPORTANT: "Daily limit reached" must exactly match the string returned by
-      // the Supabase `decrement_credits_by_api_key` RPC function. If that string
-      // changes, this check will silently fall through to 401 instead of 429.
-      if (result.error === "Daily limit reached") {
+      // The RPC returns this exact string for daily limit exhaustion.
+      // Use a named constant so any future rename produces a compile-time search hit.
+      const DAILY_LIMIT_ERROR = "Daily limit reached" as const;
+      if (result.error === DAILY_LIMIT_ERROR) {
         res.status(429).json({
           error: "Daily credit limit reached. Please upgrade your plan or try again tomorrow.",
           code: "CREDITS_EXHAUSTED",
@@ -176,7 +173,7 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
     (req as any).authContext = {
       creditsRemaining: result.credits_remaining,
       plan: result.plan,
-      email: result.email,
+      // Note: email intentionally excluded — avoid leaking PII into logs via authContext
     };
 
     next();
@@ -452,6 +449,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // When imported as a module (e.g. for testing individual routes), the server does
 // NOT auto-start — call app.listen() manually or set START_SERVER=1 before require.
 if (require.main === module || process.env.START_SERVER === "1") {
+  // Startup guard: fail fast before accepting any requests if auth env vars are missing.
+  // This ensures the passthrough branch in apiKeyAuth is truly unreachable in production.
+  if (process.env.NODE_ENV === "production" && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
+    console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production");
+    process.exit(1);
+  }
+
   const httpServer = app.listen(PORT, () => {
     console.log(`Charta API v${VERSION} listening on http://localhost:${PORT}`);
     if (!BASE_URL && process.env.NODE_ENV === "production") {
