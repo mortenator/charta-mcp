@@ -21,6 +21,17 @@ import { CHART_TYPE_INFO, CHART_SCHEMAS } from "./schemas.js";
 import { z } from "zod";
 // Requires "resolveJsonModule": true in tsconfig.json (already set)
 import pkg from "../package.json";
+// ChartInput already imported above via ./types.js — augmentation uses the same type
+
+// ─── Express type augmentation — safe alternative to (req as any) casts
+declare global {
+  namespace Express {
+    interface Request {
+      authContext?: { creditsRemaining?: number; plan?: string };
+      validatedChart?: ChartInput & { seriesLabels?: string[] };
+    }
+  }
+}
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -92,11 +103,15 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
  */
 async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    // In production this branch is unreachable: the startup guard (see app.listen block)
-    // calls process.exit(1) before the first request arrives.
-    // In dev/test we allow passthrough so local development works without Supabase.
-    console.warn("⚠️  API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
-    next();
+    // Only allow passthrough in explicit dev/test environments.
+    // staging, preview, or unset NODE_ENV all return 500 to avoid silently open endpoints.
+    if (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") {
+      console.warn("⚠️  API key auth disabled — SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set");
+      next();
+      return;
+    }
+    console.error("API key auth misconfigured — SUPABASE env vars not set");
+    res.status(500).json({ error: "Server misconfiguration", code: "SERVER_ERROR" });
     return;
   }
 
@@ -170,7 +185,7 @@ async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Prom
       return;
     }
 
-    (req as any).authContext = {
+    req.authContext = {
       creditsRemaining: result.credits_remaining,
       plan: result.plan,
       // Note: email intentionally excluded — avoid leaking PII into logs via authContext
@@ -311,7 +326,7 @@ function validateChartRequest(req: Request, res: Response, next: NextFunction): 
     });
     return;
   }
-  (req as any).validatedChart = parsed.data;
+  req.validatedChart = parsed.data;
   next();
 }
 
@@ -357,7 +372,8 @@ app.get("/v1/chart-types/:type/schema", (req: Request, res: Response) => {
  */
 app.post("/v1/charts", chartGenLimiter, validateChartRequest, apiKeyAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const input = (req as any).validatedChart as ChartInput & { seriesLabels?: string[] };
+    // validatedChart is guaranteed set by validateChartRequest middleware which runs before this handler
+    const input = req.validatedChart!;
     const result = generateChart(input);
 
     // generateChart() enforces cache capacity before insertion.
