@@ -205,30 +205,29 @@ async function testNotFound(): Promise<void> {
   assert(data.code === "NOT_FOUND", 'code === "NOT_FOUND"');
 }
 
-async function testCreditConsumptionOnlyOnSuccess(): Promise<void> {
-  console.log("\n📋 Credit consumption: only on success (dev/test passthrough)");
+async function testValidationBeforeAuth(): Promise<void> {
+  console.log("\n📋 Validation runs before auth (dev/test passthrough)");
 
-  // In test mode, auth is passthrough but the flow still exercises the middleware chain.
-  // Successful chart generation should complete without error
+  // In test mode, auth is passthrough but the middleware chain order is still exercised.
   const { status: s1 } = await json("POST", "/v1/charts", {
     type: "bar",
     data: [{ label: "A", value: 1 }],
   });
-  assert(s1 === 201, "successful chart returns 201 (credits consumed after generation)");
+  assert(s1 === 201, "valid request passes validation and auth passthrough");
 
-  // Invalid body should be rejected at validation — before auth or credit consumption
+  // Invalid body rejected at validation — before auth middleware runs
   const { status: s2 } = await json("POST", "/v1/charts", {
     type: "invalid-type",
     data: [{ label: "A", value: 1 }],
   });
-  assert(s2 === 400, "invalid request rejected before credit consumption");
+  assert(s2 === 400, "invalid type rejected at validation layer");
 
-  // Empty data should be rejected at validation — no credits consumed
+  // Empty data rejected at validation — auth never reached
   const { status: s3 } = await json("POST", "/v1/charts", {
     type: "bar",
     data: [],
   });
-  assert(s3 === 400, "empty data rejected before credit consumption");
+  assert(s3 === 400, "empty data rejected at validation layer");
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -246,7 +245,7 @@ async function testCreditConsumptionOnlyOnSuccess(): Promise<void> {
     await testGetSvg(chartId);
     await testGetPng(chartId);
     await testNotFound();
-    await testCreditConsumptionOnlyOnSuccess();
+    await testValidationBeforeAuth();
   } catch (err) {
     console.error("Unexpected test error:", err);
     process.exit(1);

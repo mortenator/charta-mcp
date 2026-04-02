@@ -27,7 +27,7 @@ import pkg from "../package.json";
 declare global {
   namespace Express {
     interface Request {
-      authContext?: { creditsRemaining?: number; plan?: string };
+      authContext?: { creditsRemaining?: number; unlimited?: boolean; plan?: string };
       validatedChart?: ChartInput & { seriesLabels?: string[] };
     }
   }
@@ -126,9 +126,9 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
   }
 
   const apiKey = authHeader.slice(7);
-  if (apiKey.length === 0) {
+  if (apiKey.length === 0 || apiKey.length > 256) {
     res.status(401).json({
-      error: "API key must not be empty",
+      error: "Invalid API key format",
       code: "AUTH_REQUIRED",
     });
     return;
@@ -178,15 +178,17 @@ async function reserveCredit(req: Request, res: Response, next: NextFunction): P
       return;
     }
 
+    const isUnlimited = result.credits_remaining === "unlimited";
     req.authContext = {
       creditsRemaining: typeof result.credits_remaining === "number" ? result.credits_remaining : undefined,
+      unlimited: isUnlimited,
       plan: result.plan,
     };
 
     next();
   } catch (err: unknown) {
     if (err instanceof Error && err.name === "AbortError") {
-      console.error("Credit reservation timed out after 5s");
+      console.error(`Credit reservation timed out after ${FETCH_TIMEOUT_MS}ms`);
       res.status(503).json({ error: "Authentication service timed out", code: "AUTH_TIMEOUT" });
     } else {
       console.error("Credit reservation error:", err instanceof Error ? err.message : "unknown error");
