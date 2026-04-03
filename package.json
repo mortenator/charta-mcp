@@ -1,6 +1,6 @@
 {
   "name": "@charta/mcp",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "mcpName": "io.github.mortenator/charta",
   "description": "MCP server for generating beautiful, presentation-ready charts (SVG + PNG)",
   "main": "dist/index.js",
