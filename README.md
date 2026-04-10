@@ -264,6 +264,31 @@ Default theme is **dark** (`#0a0a0a` background, `#7C5CFC` accent, white text).
 
 ---
 
+## Python SDK
+
+Install the typed Python client for use in notebooks, scripts, and AI agent pipelines:
+
+```bash
+pip install charta
+```
+
+```python
+from charta import ChartaClient, BarChart, BarData, ChartStyle
+
+chart = BarChart(
+    title="Quarterly Revenue",
+    data=[BarData(label="Q1", value=120), BarData(label="Q2", value=180)],
+    style=ChartStyle(theme="dark"),
+)
+
+with ChartaClient("https://api.getcharta.ai", api_key="sk-...") as client:
+    svg = client.generate_svg(chart)
+```
+
+Full docs: [python/README.md](python/README.md)
+
+---
+
 ## Links
 
 - Website: [getcharta.ai](https://getcharta.ai)
