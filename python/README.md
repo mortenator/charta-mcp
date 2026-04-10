@@ -59,6 +59,12 @@ async with AsyncChartaClient("https://api.getcharta.ai") as client:
             data=[LineData(label="Jan", value=100), LineData(label="Feb", value=120)],
         )
     )
+    svg = await client.generate_svg(
+        LineChart(
+            title="Trend",
+            data=[LineData(label="Jan", value=100), LineData(label="Feb", value=120)],
+        )
+    )
 ```
 
 ## Supported Chart Types

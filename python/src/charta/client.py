@@ -163,6 +163,6 @@ def _raise_for_status(response: httpx.Response) -> None:
     try:
         body = response.json()
         message = body.get("error", response.text)
-    except Exception:
+    except (ValueError, KeyError):
         message = response.text
     raise ChartaError(response.status_code, message)
