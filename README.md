@@ -292,4 +292,4 @@ Full docs: [python/README.md](python/README.md)
 ## Links
 
 - Website: [getcharta.ai](https://getcharta.ai)
-- Issues: [github.com/charta-ai/charta-mcp](https://github.com/charta-ai/charta-mcp)
+- Issues: [github.com/charta-ai/charta-mcp](https://github.com/mortenator/charta-mcp)

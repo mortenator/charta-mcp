@@ -145,3 +145,75 @@ class TestAsyncChartaClient:
 
         assert result.svg == "<svg>async</svg>"
         assert result.chart_id == "chart_3_ghi"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_generate_svg(self) -> None:
+        respx.post(f"{BASE_URL}/v1/charts").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {
+                        "svg": "<svg>async-svg</svg>",
+                        "chartId": "chart_4_jkl",
+                        "type": "bar",
+                    },
+                },
+            )
+        )
+
+        chart = BarChart(data=[BarData(label="A", value=1)])
+        async with AsyncChartaClient(BASE_URL) as client:
+            svg = await client.generate_svg(chart)
+
+        assert svg == "<svg>async-svg</svg>"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_types(self) -> None:
+        respx.get(f"{BASE_URL}/v1/chart-types").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [{"type": "bar", "description": "Vertical bars"}],
+                },
+            )
+        )
+
+        async with AsyncChartaClient(BASE_URL) as client:
+            types = await client.list_types()
+
+        assert len(types) == 1
+        assert types[0]["type"] == "bar"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_get_schema(self) -> None:
+        respx.get(f"{BASE_URL}/v1/chart-types/bar/schema").mock(
+            return_value=httpx.Response(200, json={"success": True, "data": {"type": "object"}})
+        )
+
+        async with AsyncChartaClient(BASE_URL) as client:
+            schema = await client.get_schema("bar")
+
+        assert schema["type"] == "object"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_error_handling(self) -> None:
+        respx.post(f"{BASE_URL}/v1/charts").mock(
+            return_value=httpx.Response(
+                400,
+                json={"success": False, "error": "Missing required field: data"},
+            )
+        )
+
+        chart = BarChart(data=[BarData(label="A", value=1)])
+        async with AsyncChartaClient(BASE_URL) as client:
+            with pytest.raises(ChartaError) as exc_info:
+                await client.generate(chart)
+
+        assert exc_info.value.status_code == 400
+        assert "Missing required field" in exc_info.value.message
