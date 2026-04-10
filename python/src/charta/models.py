@@ -167,7 +167,12 @@ class BubbleData(BaseModel):
 
 
 class GanttData(BaseModel):
-    """Data point for gantt charts."""
+    """Data point for gantt charts.
+
+    Charta's current schema uses numeric timeline positions for `start` and
+    `end` (for example day offsets or percentage positions), matching the
+    TypeScript contract in `src/schemas.ts`.
+    """
 
     label: str
     start: float
@@ -402,8 +407,8 @@ ChartInput = Annotated[
 class ChartResult(BaseModel):
     """Result returned from chart generation.
 
-    The Charta API returns camelCase `chartId`; snake_case `chart_id` is not part
-    of the wire contract and is intentionally not accepted here.
+    The wire format uses camelCase `chartId`, but snake_case `chart_id` is also
+    accepted for ergonomic local construction in Python tests and helpers.
     """
 
     svg: str
