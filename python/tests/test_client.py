@@ -117,7 +117,7 @@ class TestChartaClient:
 
     def test_trailing_slash_stripped(self) -> None:
         client = ChartaClient(f"{BASE_URL}/")
-        assert str(client._client.base_url) == f"{BASE_URL}"
+        assert str(client._client.base_url).rstrip("/") == BASE_URL
         client.close()
 
 

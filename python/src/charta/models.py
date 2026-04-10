@@ -101,14 +101,14 @@ class GroupedBarData(BaseModel):
     """Data point for grouped-bar charts."""
 
     label: str
-    values: List[float]
+    values: Annotated[List[float], Field(min_length=1)]
 
 
 class StackedBarData(BaseModel):
     """Data point for stacked-bar charts."""
 
     label: str
-    values: List[float]
+    values: Annotated[List[float], Field(min_length=1)]
 
 
 class WaterfallData(BaseModel):
@@ -191,7 +191,7 @@ class RadarData(BaseModel):
 class HeatmapData(BaseModel):
     """Data point for heatmap charts."""
 
-    label: str = ""
+    label: str
     row: str
     col: str
     value: float

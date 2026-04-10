@@ -35,7 +35,7 @@ from charta.models import (
     RadarChart,
     HeatmapChart,
 )
-from charta.client import ChartaClient
+from charta.client import AsyncChartaClient, ChartaClient
 
 __version__ = "1.1.0"
 
@@ -78,4 +78,5 @@ __all__ = [
     "HeatmapChart",
     # Client
     "ChartaClient",
+    "AsyncChartaClient",
 ]
