@@ -118,12 +118,22 @@ class TestGroupedBarChart:
         assert payload["seriesLabels"] == ["A", "B"]
 
 
+    def test_min_items(self) -> None:
+        with pytest.raises(ValidationError):
+            GroupedBarChart(data=[])
+
+
 class TestStackedBarChart:
     def test_create(self) -> None:
         chart = StackedBarChart(
             data=[StackedBarData(label="Jan", values=[40, 30, 20])],
         )
         assert chart.type == "stacked-bar"
+
+
+    def test_min_items(self) -> None:
+        with pytest.raises(ValidationError):
+            StackedBarChart(data=[])
 
 
 class TestWaterfallChart:
@@ -288,3 +298,9 @@ class TestChartResult:
         )
         assert result.chart_id == "chart_123_abc"
         assert result.type == "bar"
+
+    def test_reject_snake_case_chart_id(self) -> None:
+        with pytest.raises(ValidationError):
+            ChartResult.model_validate(
+                {"svg": "<svg></svg>", "chart_id": "chart_123_abc", "type": "bar"}
+            )

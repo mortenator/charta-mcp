@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conlist
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -191,7 +191,6 @@ class RadarData(BaseModel):
 class HeatmapData(BaseModel):
     """Data point for heatmap charts."""
 
-    label: str
     row: str
     col: str
     value: float
@@ -219,7 +218,7 @@ class GroupedBarChart(BaseModel):
     """Side-by-side bars for multiple series comparison."""
 
     type: Literal["grouped-bar"] = "grouped-bar"
-    data: List[GroupedBarData]
+    data: conlist(GroupedBarData, min_length=1)
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     series_labels: Optional[List[str]] = Field(None, alias="seriesLabels")
@@ -233,7 +232,7 @@ class StackedBarChart(BaseModel):
     """Stacked bars showing composition and totals."""
 
     type: Literal["stacked-bar"] = "stacked-bar"
-    data: List[StackedBarData]
+    data: conlist(StackedBarData, min_length=1)
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     series_labels: Optional[List[str]] = Field(None, alias="seriesLabels")
@@ -247,7 +246,7 @@ class WaterfallChart(BaseModel):
     """Floating bars for financial bridges and variance analysis."""
 
     type: Literal["waterfall"] = "waterfall"
-    data: List[WaterfallData]
+    data: Annotated[List[WaterfallData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     x_label: Optional[str] = Field(None, alias="xLabel")
@@ -260,7 +259,7 @@ class LineChart(BaseModel):
     """Connected points showing trends over time."""
 
     type: Literal["line"] = "line"
-    data: List[LineData]
+    data: Annotated[List[LineData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     x_label: Optional[str] = Field(None, alias="xLabel")
@@ -273,7 +272,7 @@ class AreaChart(BaseModel):
     """Line chart with filled area beneath."""
 
     type: Literal["area"] = "area"
-    data: List[AreaData]
+    data: Annotated[List[AreaData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     x_label: Optional[str] = Field(None, alias="xLabel")
@@ -308,7 +307,7 @@ class ScatterChart(BaseModel):
     """X-Y points for correlation analysis."""
 
     type: Literal["scatter"] = "scatter"
-    data: List[ScatterData]
+    data: Annotated[List[ScatterData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     x_label: Optional[str] = Field(None, alias="xLabel")
@@ -321,7 +320,7 @@ class BubbleChart(BaseModel):
     """Scatter with size dimension for three-variable relationships."""
 
     type: Literal["bubble"] = "bubble"
-    data: List[BubbleData]
+    data: Annotated[List[BubbleData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     x_label: Optional[str] = Field(None, alias="xLabel")
@@ -334,7 +333,7 @@ class GanttChart(BaseModel):
     """Horizontal timeline bars for project schedules."""
 
     type: Literal["gantt"] = "gantt"
-    data: List[GanttData]
+    data: Annotated[List[GanttData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
 
@@ -345,7 +344,7 @@ class MekkoChart(BaseModel):
     """Variable-width stacked bars (Marimekko) for market share analysis."""
 
     type: Literal["mekko"] = "mekko"
-    data: List[MekkoData]
+    data: Annotated[List[MekkoData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     series_labels: Optional[List[str]] = Field(None, alias="seriesLabels")
@@ -368,7 +367,7 @@ class HeatmapChart(BaseModel):
     """Color-coded grid matrix for two-dimensional patterns."""
 
     type: Literal["heatmap"] = "heatmap"
-    data: List[HeatmapData]
+    data: Annotated[List[HeatmapData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
 
@@ -401,10 +400,14 @@ ChartInput = Annotated[
 
 
 class ChartResult(BaseModel):
-    """Result returned from chart generation."""
+    """Result returned from chart generation.
+
+    The Charta API returns camelCase `chartId`; snake_case `chart_id` is not part
+    of the wire contract and is intentionally not accepted here.
+    """
 
     svg: str
     chart_id: str = Field(alias="chartId")
     type: ChartType
 
-    model_config = {"populate_by_name": True}
+    model_config = {}
