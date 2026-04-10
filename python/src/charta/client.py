@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from charta.models import ChartInput, ChartResult, ChartStyle, ChartType
+from charta.models import ChartInput, ChartResult, ChartType
 
 
 class ChartaError(Exception):

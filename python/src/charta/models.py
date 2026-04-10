@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, conlist
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -218,7 +218,7 @@ class GroupedBarChart(BaseModel):
     """Side-by-side bars for multiple series comparison."""
 
     type: Literal["grouped-bar"] = "grouped-bar"
-    data: conlist(GroupedBarData, min_length=1)
+    data: Annotated[List[GroupedBarData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     series_labels: Optional[List[str]] = Field(None, alias="seriesLabels")
@@ -232,7 +232,7 @@ class StackedBarChart(BaseModel):
     """Stacked bars showing composition and totals."""
 
     type: Literal["stacked-bar"] = "stacked-bar"
-    data: conlist(StackedBarData, min_length=1)
+    data: Annotated[List[StackedBarData], Field(min_length=1)]
     title: Optional[str] = None
     style: Optional[ChartStyle] = None
     series_labels: Optional[List[str]] = Field(None, alias="seriesLabels")
@@ -410,4 +410,3 @@ class ChartResult(BaseModel):
     chart_id: str = Field(alias="chartId")
     type: ChartType
 
-    model_config = {}
