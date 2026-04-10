@@ -299,8 +299,8 @@ class TestChartResult:
         assert result.chart_id == "chart_123_abc"
         assert result.type == "bar"
 
-    def test_reject_snake_case_chart_id(self) -> None:
-        with pytest.raises(ValidationError):
-            ChartResult.model_validate(
-                {"svg": "<svg></svg>", "chart_id": "chart_123_abc", "type": "bar"}
-            )
+    def test_accept_snake_case_chart_id(self) -> None:
+        result = ChartResult.model_validate(
+            {"svg": "<svg></svg>", "chart_id": "chart_123_abc", "type": "bar"}
+        )
+        assert result.chart_id == "chart_123_abc"

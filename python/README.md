@@ -96,6 +96,9 @@ chart = WaterfallChart(
     ],
 )
 
+# Prefer omitting is_total for regular steps rather than setting is_total=False.
+# The API treats omission as the normal non-total bar case.
+
 with ChartaClient() as client:
     svg = client.generate_svg(chart)
 

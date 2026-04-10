@@ -178,7 +178,7 @@ class MekkoData(BaseModel):
     """Data point for mekko (Marimekko) charts."""
 
     label: str
-    values: List[float]
+    values: Annotated[List[float], Field(min_length=1)]
 
 
 class RadarData(BaseModel):
@@ -409,4 +409,6 @@ class ChartResult(BaseModel):
     svg: str
     chart_id: str = Field(alias="chartId")
     type: ChartType
+
+    model_config = {"populate_by_name": True}
 
